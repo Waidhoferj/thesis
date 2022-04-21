@@ -1,0 +1,16 @@
+[package]
+name = "shelf-crdt"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.56"
+bincode = "1.3.3"
+bloom = "0.3.2"
+lib0 = "0.5.0"
+nanomsg = "0.7.2"
+rand = "0.8.5"
+serde = { version = "1.0.136", features = ["derive"]}
+serde_json = "1.0.79"
