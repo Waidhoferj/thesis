@@ -1,0 +1,10 @@
+[workspace]
+
+members = [
+    "shelf-crdt",
+    "networking",
+    "crdt-playground"
+]
+
+resolver = "2"
+
