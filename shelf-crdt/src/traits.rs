@@ -1,14 +1,16 @@
+use std::ops::Deref;
+
 // pub mod temporal;
 // pub mod wrap_crdt;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub trait Incrementable {
     /// Increments the counter of the source type. It is expected that the type monotonically increases.
     fn increment(&mut self);
 }
 
 // Controls how types recursively merge together: TODO: should this be generic?
-pub trait Mergeable {
-    type Other;
-    fn merge(&mut self, other: Self::Other);
+pub trait Mergeable<Other> {
+    fn merge(&mut self, other: Other);
 }
 
 /// A type with an associated CRDT wrapper that a Doc can use to track/update the object
@@ -22,22 +24,9 @@ pub trait TypeOrd {
     fn type_cmp(&self, other: &Self) -> std::cmp::Ordering;
 }
 
-// Default behavior is just to choose the max IF THEY ARE NOT COLLECTIONS (Don't have a reliable way to check for this)
-// impl Mergeable for usize {
-//     fn merge(self, other: Self) -> Self {
-//         self.max(other)
-//     }
-// }
-
-// impl<K, V: Mergeable> Mergeable for HashMap<K, V> {
-//     fn merge(&mut self, other: Self) -> Self {
-//         todo!()
-//     }
-// }
-
-pub trait DeltaCRDT: Mergeable {
-    type Delta;
-    type StateVector;
+pub trait DeltaCRDT: Deref {
+    type Delta: Serialize + DeserializeOwned;
+    type StateVector: Serialize + DeserializeOwned;
     fn get_state_vector(&self) -> Self::StateVector;
     fn get_state_delta(&self, sv: &Self::StateVector) -> Option<Self::Delta>;
 }

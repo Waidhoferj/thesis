@@ -1,16 +1,14 @@
-use std::{mem::replace, ops::Deref};
+use std::{collections::HashMap, fmt::Display, ops::Deref};
 
 use nannou::{
     prelude::*,
     rand::{thread_rng, Rng},
 };
+use shelf_crdt_macros::CRDT;
 use std::time::SystemTime;
 
-use networking::Multicast;
-use serde_json::{json, Value as JSON};
-use shelf_crdt::temporal::Temporal;
-use shelf_crdt::wrap_crdt::{Atomic, Shelf, StateVector, Value};
-use shelf_crdt::{DeltaCRDT, Mergeable};
+use serde::{Deserialize, Serialize};
+use shelf_crdt::adjacent_crdt::Doc;
 
 fn main() {
     nannou::app(model).update(update).run();
@@ -57,86 +55,90 @@ impl Effect {
     }
 }
 
+#[derive(CRDT, Clone, Default, Serialize, Deserialize, Debug)]
+struct MouseCursor {
+    x: f32,
+    y: f32,
+}
+
+impl From<Point2> for MouseCursor {
+    fn from(point: Point2) -> Self {
+        MouseCursor {
+            x: point.x,
+            y: point.y,
+        }
+    }
+}
+
+impl Display for MouseCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{x: {}, y: {}}}", self.x, self.y)
+    }
+}
+
+impl From<MouseCursor> for Point2 {
+    fn from(cursor: MouseCursor) -> Self {
+        vec2(cursor.x, cursor.y)
+    }
+}
+
 struct Model {
     _window: window::Id,
-    id: u8,
-    shared_state: Shelf<Value, Temporal>,
+    id: String,
+    shared_state: Doc<MouseCursorCRDT>, // TODO make this relative to the original
     effects: Vec<Effect>,
-    communicator: Multicast,
-    last_update_sent: u128,
-    update_frequency: usize,
 }
 
 impl Model {
     fn set_mouse_pos(&mut self, point: Point2) {
-        let point: Vec<Atomic> = vec![point.x.into(), point.y.into()];
-        let point = Value::List(point);
-        let id = self.id.to_string();
-        let path = format!("{}/mouse_position", id);
-        self.shared_state.update(&path, point).unwrap();
-    }
-
-    fn extract_mouse_pos(shelf_content: &Value) -> Point2 {
-        if let Value::List(list) = shelf_content {
-            let point: Vec<f32> = list
-                .iter()
-                .filter_map(|atom| match atom {
-                    Atomic::Float(f) => Some(*f),
-                    _ => None,
-                })
-                .collect();
-            Point2::new(point[0], point[1])
-        } else {
-            panic!("sadddd");
-        }
+        let cursor: MouseCursor = point.into();
+        self.shared_state.update(&self.id, &cursor).unwrap();
     }
 
     fn get_mouse_pos(&self) -> Point2 {
-        let id = self.id.to_string();
-        let path = format!("{}/mouse_position", id);
-        let value = self.shared_state.get(&path).unwrap();
-        Self::extract_mouse_pos(value)
+        self.shared_state.get(&self.id).clone().into()
     }
 
     fn get_collaborator_mice(&self) -> Vec<Point2> {
-        match self.shared_state.deref() {
-            Some(Value::Map(map)) => map
-                .iter()
-                .filter_map(|(_, val)| val.get("mouse_position"))
-                .map(Self::extract_mouse_pos)
-                .collect(),
-            _ => panic!("couldn't find users."),
-        }
+        self.shared_state
+            .elements
+            .values()
+            .map(|v| v.deref().clone().into())
+            .collect()
     }
 
-    fn send_shared_state_update(&mut self) {
-        let shelf = &self.shared_state;
-        let sv: StateVector = shelf.into();
-        let data = serde_json::to_vec(&sv).unwrap();
-        self.communicator.send("update", &data);
-    }
+    // fn send_shared_state_update(&mut self) {
+    //     let shelf = &self.shared_state;
+    //     let sv: StateVector = shelf.into();
+    //     let data = serde_json::to_vec(&sv).unwrap();
+    //     self.communicator.send("update", &data);
+    // }
 
-    fn receive_shared_state_update(&mut self) {
-        if let Some(update) = self.communicator.try_recv() {
-            match update.topic.as_ref() {
-                "update" => {
-                    let sv: StateVector = serde_json::from_slice(&update.data).unwrap();
-                    if let Some(updates) = self.shared_state.get_state_delta(&sv) {
-                        let data = serde_json::to_vec(&updates).unwrap();
-                        self.communicator
-                            .send(&format!("diff:{}", update.sender), &data);
-                    }
-                }
-                "diff" => {
-                    let update_shelf: Shelf<Value, Temporal> =
-                        serde_json::from_slice(&update.data).unwrap();
-                    let shared_state = std::mem::take(&mut self.shared_state);
-                    self.shared_state = shared_state.merge(update_shelf);
-                }
-                _ => (),
-            }
-        }
-    }
+    // fn receive_shared_state_update(&mut self) {
+    //     while let Some(update) = self.communicator.try_recv() {
+    //         // Use enum for the message type
+    //         match update.topic.as_ref() {
+    //             "update" => {
+    //                 // state vector
+    //                 let sv: StateVector = serde_json::from_slice(&update.data).unwrap();
+    //                 if let Some(updates) = self.shared_state.get_state_delta(&sv) {
+    //                     let data = serde_json::to_vec(&updates).unwrap();
+    //                     self.communicator
+    //                         .send(&format!("diff:{}", update.sender), &data);
+    //                 }
+    //             }
+    //             "diff" => {
+    //                 // delta / update
+    //                 let update_shelf: Shelf<Value, Temporal> =
+    //                     serde_json::from_slice(&update.data).unwrap();
+    //                 // Change merge to just take self as mutable reference
+    //                 let shared_state = std::mem::take(&mut self.shared_state);
+    //                 self.shared_state = shared_state.merge(update_shelf);
+    //             }
+    //             _ => (),
+    //         }
+    //     }
+    // }
 }
 
 fn model(app: &App) -> Model {
@@ -153,23 +155,16 @@ fn model(app: &App) -> Model {
         .unwrap()
         .as_micros()
         % 255;
-    let id = id as u8;
-    let communicator = Multicast::new(id);
-    let shared_state: Shelf<Value, Temporal> = Shelf::from_template(
-        json!({ id.to_string(): {
-        "mouse_position": [0.0, 0.0],
-    }  }),
-        id.to_string(),
-    );
+    let id: String = id.to_string();
+    let cursor_pos = MouseCursor { x: 0.0, y: 0.0 };
+    let mut shared_state = Doc::default();
+    shared_state.register(id.clone(), cursor_pos);
 
     Model {
         id,
         _window,
         effects: vec![],
         shared_state,
-        communicator,
-        update_frequency: 300,
-        last_update_sent: 0,
     }
 }
 
@@ -185,12 +180,9 @@ fn update(_app: &App, model: &mut Model, update: Update) {
         .into_iter()
         .filter(|effect| effect.opacity > 0.0)
         .collect();
-    let now = update.since_start.as_millis();
-    model.receive_shared_state_update();
-    if now - model.last_update_sent > model.update_frequency as u128 {
-        model.send_shared_state_update();
-        model.last_update_sent = now;
-    }
+
+    model.shared_state.apply_updates().unwrap();
+    model.shared_state.sync()
 }
 
 fn mouse_moved(_app: &App, model: &mut Model, pos: Point2) {
@@ -208,8 +200,13 @@ fn mouse_released(_app: &App, model: &mut Model, _button: MouseButton) {
 fn on_key_release(_app: &App, model: &mut Model, key: Key) {
     match key {
         Key::P => {
-            let data = serde_json::to_string(&model.shared_state.clone()).unwrap();
-            println!("{data}");
+            let els: HashMap<String, MouseCursor> = model
+                .shared_state
+                .elements
+                .iter()
+                .map(|(k, v)| (k.clone(), v.deref().clone()))
+                .collect();
+            println!("{els:?}");
         }
         _ => (),
     }

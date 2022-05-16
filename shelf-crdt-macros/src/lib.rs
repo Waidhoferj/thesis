@@ -1,12 +1,16 @@
 use proc_macro::TokenStream;
+use proc_macro_roids::DeriveInputExt;
 use quote::quote;
+
 use syn::{
-    parse_macro_input, punctuated::Punctuated, token::Comma, DeriveInput, Field, Ident, Type,
+    parse_macro_input, parse_quote, punctuated::Punctuated, token::Comma, DeriveInput, Field,
+    Ident, Type,
 };
 
 #[proc_macro_derive(CRDT)]
 pub fn derive_crdt(input: TokenStream) -> TokenStream {
-    let ast = parse_macro_input!(input as DeriveInput);
+    let mut ast = parse_macro_input!(input as DeriveInput);
+    ast.append_derives(parse_quote!(Serialize, Deserialize, Clone));
     let struct_name = &ast.ident;
     let state_vector_name = format!("{struct_name}StateVector");
     let state_vector_name = syn::Ident::new(&state_vector_name, struct_name.span());
@@ -17,6 +21,7 @@ pub fn derive_crdt(input: TokenStream) -> TokenStream {
 
     let imports = quote!(
         use shelf_crdt::traits;
+        use serde;
     );
 
     let fields = if let syn::Data::Struct(syn::DataStruct {
@@ -48,12 +53,38 @@ pub fn derive_crdt(input: TokenStream) -> TokenStream {
         })
         .collect();
 
+    let structs: [DeriveInput; 3] = [
+        parse_quote!(
+        struct #state_vector_name {
+            #state_vec_fields
+        }),
+        parse_quote!(
+            struct #delta_name {
+                #delta_fields
+            }
+        ),
+        parse_quote!(
+            struct #crdt_name {
+                state: #struct_name,
+                clocks: #state_vector_name,
+            }
+        ),
+    ];
+    let structs = structs.into_iter().map(|mut s| {
+        s.append_derives(parse_quote!(
+            serde::Serialize,
+            serde::Deserialize,
+            std::default::Default
+        ));
+        s
+    });
+
     let props: Vec<Ident> = fields
         .iter()
         .map(|field| field.ident.as_ref().unwrap().clone())
         .collect();
 
-    let merge_components = props.iter().map(|field_name| {
+    let merge_delta_components = props.iter().map(|field_name| {
         let merge = quote! {
             if let Some((val, time)) = other.#field_name {
                 match self.clocks.#field_name.cmp(&time) {
@@ -70,6 +101,14 @@ pub fn derive_crdt(input: TokenStream) -> TokenStream {
         };
         merge
     });
+    // TODO: This will force override, fix it later. Shouldn't be a problem for non overlapping users.
+    // This should be fine if we consider a merge to override previous values.
+    let merge_data_components = props.iter().map(|prop| {
+        quote! {
+                self.clocks.#prop += 1;
+                self.state.#prop = other.#prop.clone();
+        }
+    });
 
     let delta_components = props.iter().map(|name| {
         quote!(
@@ -81,36 +120,31 @@ pub fn derive_crdt(input: TokenStream) -> TokenStream {
         )
     });
 
-    let update_components = props.iter().map(|name| {
-        quote!(
-            if self.state.#name != data.#name {
-                self.clocks.#name += 1;
-                self.state.#name = data.#name.clone();
-            }
-        )
-    });
-
     let expanded = quote! {
         #imports
+        #(#structs)*
 
-        struct #state_vector_name {
-            #state_vec_fields
-        }
-
-        struct #delta_name {
-            #delta_fields
-        }
-        struct #crdt_name {
-            state: #struct_name,
-            clocks: #state_vector_name,
-        }
-
-        impl traits::Mergeable for #crdt_name {
-            type Other = #delta_name;
-            fn merge(&mut self, other: Self::Other) {
-                #(#merge_components)*
+        impl traits::Mergeable<#delta_name> for #crdt_name {
+            fn merge(&mut self, other:  #delta_name) {
+                #(#merge_delta_components)*
             }
         }
+
+        impl traits::Mergeable<#struct_name> for #crdt_name {
+            fn merge(&mut self, other:  #struct_name) {
+
+                #(#merge_data_components)*
+            }
+        }
+
+        impl std::ops::Deref for #crdt_name {
+            type Target = #struct_name;
+
+            fn deref(&self) -> &Self::Target {
+                &self.state
+            }
+        }
+
 
         impl traits::DeltaCRDT for #crdt_name {
             type Delta = #delta_name;
@@ -127,20 +161,6 @@ pub fn derive_crdt(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl #crdt_name {
-            fn update(&mut self, data: &#struct_name) {
-                #(#update_components)*
-            }
-        }
-
-        impl Default for #state_vector_name {
-            fn default() -> Self {
-                Self {
-                    #(#props : 0,)*
-                }
-            }
-        }
-
         impl Clone for #state_vector_name {
             fn clone(&self) -> Self {
                 Self {
@@ -149,7 +169,7 @@ pub fn derive_crdt(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl CRDTBackend for #struct_name {
+        impl traits::CRDTBackend for #struct_name {
             type Backend = #crdt_name;
             fn new_crdt(&self) -> Self::Backend {
                 #crdt_name {

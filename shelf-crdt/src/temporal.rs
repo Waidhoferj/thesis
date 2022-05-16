@@ -6,7 +6,9 @@ use std::{borrow::BorrowMut, cmp::Ordering, collections::HashMap};
 #[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Temporal {
+    // Lamport timestamp takes client id. This would eliminate vector clock
     LamportTS(u32),
+    // Eliminate this
     VectorClock {
         clocks: HashMap<String, u32>,
         user_id: String,
@@ -70,6 +72,7 @@ impl PartialOrd for Temporal {
 }
 
 impl Mergeable for Temporal {
+    type Other = Self;
     fn merge(mut self, other: Self) -> Self {
         match (self.borrow_mut(), other) {
             (Temporal::LamportTS(first), Temporal::LamportTS(second)) => {

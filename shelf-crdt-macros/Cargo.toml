@@ -18,6 +18,7 @@ quote = "1.0.18"
 serde ={ version = "1.0.137", features = ["derive"]}
 syn = "1.0.92"
 shelf-crdt = {path ="../shelf-crdt"}
+proc_macro_roids = "0.7.0"
 
 [[test]]
 name = "tests"

@@ -3,6 +3,7 @@
 extern crate nanomsg;
 
 use nanomsg::{Error, Protocol, Socket};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use std::thread;
@@ -14,7 +15,7 @@ const SERVER_DEVICE_URL: &'static str = "ipc:///tmp/thesis_multicast_server.ipc"
 const TOPIC: &'static str = "topic";
 
 pub struct Multicast {
-    id: u8,
+    pub id: u8,
     write_socket: Socket,
     read_socket: Socket,
 }
@@ -35,38 +36,19 @@ impl Multicast {
         }
     }
 
-    pub fn try_recv(&mut self) -> Option<Message> {
+    pub fn try_recv<Message: Serialize + DeserializeOwned>(&mut self) -> Option<Message> {
         let mut msg = Vec::new();
         self.read_socket
             .nb_read_to_end(&mut msg)
             .ok()
             .and_then(|_| bincode::deserialize::<Message>(&msg[TOPIC.len()..]).ok())
-            .and_then(|message| {
-                let intended_recipient = message
-                    .target
-                    .map(|t| t == self.id)
-                    .unwrap_or(self.id != message.sender);
-                if intended_recipient {
-                    Some(message)
-                } else {
-                    self.try_recv()
-                }
-            })
     }
 
-    pub fn send(&mut self, topic: &str, data: &[u8]) {
-        let mut iter = topic.split(":");
-        let topic = iter.next().unwrap();
-        let target = iter.next();
+    pub fn send<Message: Serialize + DeserializeOwned>(&mut self, message: Message) {
         let mut msg = Vec::new();
         msg.clear();
         msg.extend_from_slice(TOPIC.as_bytes());
-        let message = Message {
-            topic: topic.to_string(),
-            sender: self.id,
-            data: data.to_vec(),
-            target: target.and_then(|t| t.parse::<u8>().ok()),
-        };
+        // Lib0 Serde
         let message = bincode::serialize(&message).unwrap();
         msg.extend_from_slice(&message);
         self.write_socket.write_all(&msg).unwrap();
@@ -85,35 +67,42 @@ impl Multicast {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
-pub struct Message {
-    pub data: Vec<u8>,
-    pub sender: u8,
-    pub topic: String,
-    pub target: Option<u8>,
-}
+// #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+// pub struct Message {
+//     pub data: Vec<u8>,
+//     pub sender: u8,
+//     pub topic: String,
+//     pub target: Option<u8>,
+// }
 
 #[cfg(test)]
 mod test {
-    use std::{thread, time::Duration};
+    use std::{
+        thread::{self, sleep},
+        time::Duration,
+    };
+
+    use serde::{Deserialize, Serialize};
 
     use crate::Multicast;
+    #[derive(Serialize, Deserialize, Clone)]
+    struct Message(isize);
 
     #[test]
     fn test_send_data() {
         let mut com1 = Multicast::new(1);
         let mut com2 = Multicast::new(2);
-        let data = vec![1, 2, 3];
-        com1.send("foo", &data);
+        let data = Message(1);
+        com1.send(data.clone());
         thread::sleep(Duration::from_millis(1000));
-        if let Some(res) = com2.try_recv() {
-            assert_eq!(res.data, data);
+        if let Some(res) = com2.try_recv::<Message>() {
+            assert_eq!(res.0, data.0);
         } else {
             panic!("Did not find data");
         }
-
-        if let Some(res) = com1.try_recv() {
-            panic!("Should not have received data: {:?}", res.data);
+        sleep(Duration::from_millis(2000));
+        if let Some(res) = com1.try_recv::<Message>() {
+            panic!("Should not have received data: {:?}", res.0);
         }
     }
 }

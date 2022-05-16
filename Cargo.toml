@@ -3,7 +3,8 @@
 members = [
     "shelf-crdt",
     "networking",
-    "crdt-playground"
+    "crdt-playground",
+    "shelf-crdt-macros"
 ]
 
 resolver = "2"

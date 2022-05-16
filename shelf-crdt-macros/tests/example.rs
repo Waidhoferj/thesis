@@ -4,19 +4,6 @@ use shelf_crdt::traits::{CRDTBackend, DeltaCRDT, Mergeable};
 use shelf_crdt_macros::CRDT;
 
 #[cfg(test)]
-pub mod example {
-    use super::*;
-    // include usability info. design structure
-    #[derive(Clone, Default, Serialize, Deserialize, CRDT)]
-    struct Example {
-        name: String,
-        phone_number: usize,
-        is_online: bool,
-        progress: f64,
-    }
-}
-
-#[cfg(test)]
 mod tests {
 
     #[derive(Clone, Default, Serialize, Deserialize, CRDT)]
@@ -103,6 +90,6 @@ mod tests {
         data.fav_num = 20;
         doc.update(&id, &data).unwrap();
 
-        // receiver.apply_updates(&id).unwrap();
+        receiver.apply_updates(&id).unwrap();
     }
 }

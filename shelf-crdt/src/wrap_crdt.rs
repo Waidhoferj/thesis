@@ -713,7 +713,7 @@ mod tests {
             "2": {"mouse_position": [3, 4]}});
         let sv = shelf1.get_state_vector();
         let diff = shelf2.get_state_delta(&sv).unwrap();
-        let resulting_shelf = shelf1.merge(diff);
+        let resulting_shelf = shelf1.merge(diff); // Mutate in place
         let resulting_json: JSON = resulting_shelf.json_values();
         assert_eq!(resulting_json, expected_json)
     }
