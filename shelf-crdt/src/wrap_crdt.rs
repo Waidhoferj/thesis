@@ -5,8 +5,7 @@ use crate::temporal::Temporal;
 use crate::traits::{DeltaCRDT, Incrementable, Mergeable, TypeOrd};
 
 use std::cmp::Ordering;
-use std::fmt::Display;
-use std::ops::{Deref, DerefMut, Index};
+use std::fmt::{Display, write};
 use std::{collections::HashMap, fmt::Debug};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -33,6 +32,13 @@ impl Atomic {
             Atomic::Float(_) => 2,
             Atomic::Bool(_) => 1,
         }
+    }
+}
+
+impl Display for Atomic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr = serde_json::to_string(self).unwrap();
+        write!(f,"{}",repr )
     }
 }
 
@@ -83,6 +89,12 @@ impl Value {
             Value::Atomic(_) => 1,
             Value::ShelfMap(_) => 2,
         }
+    }
+}
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr = serde_json::to_string(self).unwrap();
+        write!(f,"{}",repr )
     }
 }
 
@@ -137,6 +149,13 @@ impl Shelf {
             content: Some(value),
             clock: 0,
         };
+    }
+}
+
+impl Display for Shelf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr = serde_json::to_string(self).unwrap();
+        write!(f,"{}",repr )
     }
 }
 
@@ -203,7 +222,10 @@ impl Mergeable<Self> for Shelf {
                 self.content = Some(Value::ShelfMap(this_value));
                 return;
             }
-            (_, _, Ordering::Less) => *self = other, // Update is greater so take on that value
+            (_, other_content, Ordering::Less) => {
+                self.content = other_content;
+                self.clock = other.clock;
+            }, // Update is greater so take on that value
             (_, _, Ordering::Greater) => (),         // Self is greater so no need to update
             (Some(Value::Atomic(this_atom)), Some(Value::Atomic(other_atom)), Ordering::Equal) => {
                     let atom = if this_atom > other_atom {
@@ -379,7 +401,6 @@ mod tests {
             content: y,
             clock: 2,
         };
-
         let shelf = merge(shelf2, shelf);
 
         if let Some(Value::Atomic(Atomic::Array(list))) = shelf.content {
@@ -389,7 +410,7 @@ mod tests {
                 panic!("not an int {:?}", list[0]);
             }
         } else {
-            panic!("Didn't find list")
+            panic!("Didn't find list: {}", shelf)
         }
     }
     #[test]
@@ -508,7 +529,6 @@ mod tests {
 
     #[test]
     fn test_get() {
-        // TODO: Start Here
         let mut shelf: Shelf = json!([{ "user": [{
             "mouse_position": [[0, 1], 0],
             "cursor": [{"left": ["a",0], "right": ["b",0]},0]
@@ -516,7 +536,7 @@ mod tests {
         .try_into()
         .unwrap();
         let res: Option<Value> =
-            (|| shelf.get_mut("user")?.get_mut("mouse_position")?.get_mut("left").and_then(|s| s.content.take()))();
+            (|| shelf.get_mut("user")?.get_mut("cursor")?.get_mut("left").and_then(|s| s.content.take()))();
         if let Some(Value::Atomic(Atomic::String(s))) = res {
             assert_eq!(s, "a");
         } else {
