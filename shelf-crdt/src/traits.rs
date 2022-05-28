@@ -24,7 +24,7 @@ pub trait TypeOrd {
     fn type_cmp(&self, other: &Self) -> std::cmp::Ordering;
 }
 
-pub trait DeltaCRDT: Deref {
+pub trait DeltaCRDT {
     type Delta: Serialize + DeserializeOwned;
     type StateVector: Serialize + DeserializeOwned;
     fn get_state_vector(&self) -> Self::StateVector;

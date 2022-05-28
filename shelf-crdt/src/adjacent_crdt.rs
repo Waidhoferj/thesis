@@ -27,7 +27,7 @@ pub trait DocElement<T: DeltaCRDT>:
 {
 }
 
-impl<CRDT: DeltaCRDT + Mergeable<CRDT::Delta> + Serialize + Default> Doc<CRDT> {
+impl<CRDT: DeltaCRDT + Mergeable<CRDT::Delta> + Serialize + Default + Deref> Doc<CRDT> {
     pub fn register<D: CRDTBackend<Backend = CRDT> + Default>(&mut self, id: String, data: D) {
         let crdt = data.new_crdt();
         self.elements.insert(id, crdt);

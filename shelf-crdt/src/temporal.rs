@@ -1,4 +1,4 @@
-use crate::{Incrementable, Mergeable};
+use crate::traits::{Incrementable, Mergeable};
 use bloom::{BloomFilter, Intersectable};
 use serde::{Deserialize, Serialize};
 use std::{borrow::BorrowMut, cmp::Ordering, collections::HashMap};
@@ -71,35 +71,34 @@ impl PartialOrd for Temporal {
     }
 }
 
-impl Mergeable for Temporal {
-    type Other = Self;
-    fn merge(mut self, other: Self) -> Self {
-        match (self.borrow_mut(), other) {
-            (Temporal::LamportTS(first), Temporal::LamportTS(second)) => {
-                Temporal::LamportTS((*first).max(second))
-            }
-            (
-                Temporal::VectorClock {
-                    clocks: first,
-                    user_id,
-                },
-                Temporal::VectorClock { clocks: second, .. },
-            ) => {
-                for (key, val) in second {
-                    first
-                        .entry(key)
-                        .and_modify(|v| *v = (*v).max(val))
-                        .or_insert(val);
-                }
-                Temporal::VectorClock {
-                    clocks: first.to_owned(),
-                    user_id: user_id.to_owned(),
-                }
-            }
-            _ => panic!("Temporal: Compared unmatched types."),
-        }
-    }
-}
+// impl Mergeable<Temporal> for Temporal {
+//     fn merge(&mut self, other: Temporal) {
+//         match (self.borrow_mut(), other) {
+//             (Temporal::LamportTS(first), Temporal::LamportTS(second)) => {
+//                 Temporal::LamportTS((*first).max(second))
+//             }
+//             (
+//                 Temporal::VectorClock {
+//                     clocks: first,
+//                     user_id,
+//                 },
+//                 Temporal::VectorClock { clocks: second, .. },
+//             ) => {
+//                 for (key, val) in second {
+//                     first
+//                         .entry(key)
+//                         .and_modify(|v| *v = (*v).max(val))
+//                         .or_insert(val);
+//                 }
+//                 Temporal::VectorClock {
+//                     clocks: first.to_owned(),
+//                     user_id: user_id.to_owned(),
+//                 }
+//             }
+//             _ => panic!("Temporal: Compared unmatched types."),
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
