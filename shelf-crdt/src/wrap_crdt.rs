@@ -301,6 +301,7 @@ impl DeltaCRDT for Shelf {
                         content: Some(Value::ShelfMap(updated_shelf_map)),
                         clock: self.clock,
                     })
+                    
                 }
                 _ => None,
             },
@@ -335,6 +336,8 @@ impl Shelf {
 
 #[cfg(test)]
 mod tests {
+
+    use std::borrow::BorrowMut;
 
     use crate::wrap_crdt::*;
 
@@ -566,5 +569,72 @@ mod tests {
         let diff = shelf2.get_state_delta(&sv).unwrap();
         shelf1.merge(diff); // Mutate in place
         assert_eq!(shelf1, expected)
+    }
+    /// Uses examples in assets/shelf_tests.json to test merges.
+    /// Ensures that both shelves arrive at the expected state.
+    #[test]
+    fn test_merges() {
+        let data: JSON = serde_json::from_str(include_str!("../assets/shelf_tests.json")).unwrap();
+
+        let tests = match data {
+            JSON::Array(tests) => tests,
+            _ => panic!("Must be array of tests")
+        };
+
+        let tests = tests.into_iter().enumerate().map(|(i, test)| {
+            let mut test = match test {
+                JSON::Object(obj) => obj,
+                val => panic!("{val:?} is not an object")
+            };
+            let shelves: Vec<Shelf> = match test.remove("shelves") {
+                Some(JSON::Array(shelves)) => {
+                    let possible_shelves:Result<_,_> = shelves.into_iter().map(Shelf::try_from).collect();
+                    possible_shelves.unwrap()
+                }
+                val => panic!("{val:?} cannot be turned into shelves")
+            };
+            let expected = test.remove("expected").map(Shelf::try_from).and_then(|v| v.ok());
+            let description = test.remove("description").and_then(|v| match v {
+                JSON::String(s) => Some(format!("Test {}: {}", i+1,s)),
+                _ => None
+            }).unwrap_or_default();
+            
+            (shelves, expected, description)
+        });
+        for (mut shelves, expected, description) in tests {
+            for i in 0..shelves.len() {
+                for j in (i+1)..shelves.len() {
+                    // Forwards
+                    let mut receiver = shelves[i].clone();
+                    let sender = shelves[j].clone();
+                    let sv = receiver.get_state_vector();
+                    let delta = sender.get_state_delta(&sv).unwrap();
+                    let cached_delta = delta.clone();
+                    receiver.merge(delta);
+
+                    // Backwards
+                    let mut receiver_back = shelves[j].clone();
+                    let sender_back = shelves[i].clone();
+                    let sv = receiver_back.get_state_vector();
+                    if let Some(delta) = sender_back.get_state_delta(&sv) {
+                        receiver_back.merge(delta)
+                    }
+
+                    // Ensure both forwards and backwards match
+                    assert_eq!(receiver, receiver_back, "Not commutative\n {description}");
+
+                    // Ensure duplicate application of deltas has no effect
+                    receiver.merge(cached_delta);
+                    assert_eq!(receiver, receiver_back, "Not idempotent\n {description}");
+                    shelves[i] = receiver;
+                    shelves[j] = receiver_back;
+                }
+                // Since the first CRDT has now received updates from all others, it should have the expected value.
+                if let Some(expected) = expected.as_ref() {
+                    assert_eq!(&shelves[i],expected, "Did not match expected\n {description}");
+                }
+                
+            }
+        }
     }
 }
