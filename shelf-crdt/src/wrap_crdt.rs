@@ -5,97 +5,16 @@ use crate::temporal::Temporal;
 use crate::traits::{DeltaCRDT, Incrementable, Mergeable, TypeOrd};
 
 use std::cmp::Ordering;
-use std::fmt::{Display, write};
+use std::fmt::{write, Display};
 use std::{collections::HashMap, fmt::Debug};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum Atomic {
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub enum Value {
     String(String),
     Int(isize),
     Float(f32),
     Bool(bool),
-    Array(Vec<Atomic>),
-}
-
-impl TypeOrd for Atomic {
-    fn type_cmp(&self, other: &Self) -> std::cmp::Ordering {
-        Atomic::type_rank(self).cmp(&Atomic::type_rank(other))
-    }
-}
-impl Atomic {
-    #[inline(always)]
-    fn type_rank(atom: &Atomic) -> u8 {
-        match atom {
-            Atomic::Array(_) => 5,
-            Atomic::String(_) => 4,
-            Atomic::Int(_) => 3,
-            Atomic::Float(_) => 2,
-            Atomic::Bool(_) => 1,
-        }
-    }
-}
-
-impl Display for Atomic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let repr = serde_json::to_string(self).unwrap();
-        write!(f,"{}",repr )
-    }
-}
-
-impl PartialOrd for Atomic {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.type_cmp(&other) {
-            Ordering::Equal => match (self, other) {
-                (Atomic::Bool(b1), Atomic::Bool(b2)) => b1.partial_cmp(b2),
-                (Atomic::Int(v1), Atomic::Int(v2)) => v1.partial_cmp(v2),
-                (Atomic::Float(v1), Atomic::Float(v2)) => v1.partial_cmp(v2),
-                (Atomic::String(v1), Atomic::String(v2)) => v1.partial_cmp(v2),
-                (Atomic::Array(v1), Atomic::Array(v2)) => v1.partial_cmp(v2),
-                _ => unreachable!("Should be of the same type"),
-            },
-            ord => Some(ord),
-        }
-    }
-}
-
-impl TryFrom<JSON> for Atomic {
-    type Error = String;
-    fn try_from(json: JSON) -> Result<Self, Self::Error> {
-        match json {
-            JSON::Bool(b) => Ok(Atomic::Bool(b)),
-            JSON::Number(n) => Ok(Atomic::Int(n.as_i64().unwrap() as isize)),
-            JSON::String(s) => Ok(Atomic::String(s)),
-            JSON::Array(a) => {
-                let array: Result<Vec<Atomic>, String> =
-                    a.into_iter().map(|json_val| json_val.try_into()).collect();
-                Ok(Atomic::Array(array?))
-            }
-            _ => Err("Should not be building with null or object values.".to_string()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum Value {
-    Atomic(Atomic),
-    ShelfMap(HashMap<String, Shelf>),
-}
-
-impl Value {
-    /// Returns the ordering of types, with higher values having more precedence than lower values.
-    #[inline(always)]
-    fn type_rank(value: &Value) -> u8 {
-        match value {
-            Value::Atomic(_) => 1,
-            Value::ShelfMap(_) => 2,
-        }
-    }
-}
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let repr = serde_json::to_string(self).unwrap();
-        write!(f,"{}",repr )
-    }
+    Array(Vec<Value>),
 }
 
 impl TypeOrd for Value {
@@ -103,8 +22,130 @@ impl TypeOrd for Value {
         Value::type_rank(self).cmp(&Value::type_rank(other))
     }
 }
+impl Value {
+    #[inline(always)]
+    fn type_rank(value: &Value) -> u8 {
+        match value {
+            Value::Array(_) => 5,
+            Value::String(_) => 4,
+            Value::Int(_) => 3,
+            Value::Float(_) => 2,
+            Value::Bool(_) => 1,
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr =  match self {
+            Value::String(s) => format!("'{}'",s),
+            Value::Int(i) => format!("{}",i),
+            Value::Float(f) => format!("{}",f),
+            Value::Bool(b) => format!("{}",b),
+            Value::Array(a) => format!("{:?}",a)
+        };
+        write!(f, "{repr}")
+    }
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return std::fmt::Display::fmt(&self, f)
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.type_cmp(&other) {
+            Ordering::Equal => match (self, other) {
+                (Value::Bool(b1), Value::Bool(b2)) => b1.partial_cmp(b2),
+                (Value::Int(v1), Value::Int(v2)) => v1.partial_cmp(v2),
+                (Value::Float(v1), Value::Float(v2)) => v1.partial_cmp(v2),
+                (Value::String(v1), Value::String(v2)) => v1.partial_cmp(v2),
+                (Value::Array(v1), Value::Array(v2)) => v1.partial_cmp(v2),
+                _ => unreachable!("Should be of the same type"),
+            },
+            ord => Some(ord),
+        }
+    }
+}
 
 impl TryFrom<JSON> for Value {
+    type Error = String;
+    fn try_from(json: JSON) -> Result<Self, Self::Error> {
+        match json {
+            JSON::Bool(b) => Ok(Value::Bool(b)),
+            JSON::Number(n) if n.is_i64() => Ok(Value::Int(n.as_i64().unwrap() as isize)),
+            JSON::Number(n) if n.is_f64() => Ok(Value::Float(n.as_f64().unwrap() as f32)),
+            JSON::String(s) => Ok(Value::String(s)),
+            JSON::Array(a) => {
+                let array: Result<Vec<Value>, String> =
+                    a.into_iter().map(|json_val| json_val.try_into()).collect();
+                Ok(Value::Array(array?))
+            }
+            _ => Err("Should not be building with null or object values.".to_string()),
+        }
+    }
+}
+
+impl From<Value> for JSON {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::String(s) => json!(s),
+            Value::Int(i) => json!(i),
+            Value::Float(f) => json!(f),
+            Value::Bool(b) => json!(b),
+            Value::Array(a) => {
+                let arr: Vec<JSON> = a.into_iter().map(JSON::from).collect();
+                json!(arr)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub enum ShelfContent {
+    Value(Value),
+    ShelfMap(HashMap<String, Shelf>),
+}
+
+impl ShelfContent {
+    /// Returns the ordering of types, with higher values having more precedence than lower values.
+    #[inline(always)]
+    fn type_rank(content: &ShelfContent) -> u8 {
+        match content {
+            ShelfContent::Value(_) => 1,
+            ShelfContent::ShelfMap(_) => 2,
+        }
+    }
+}
+
+impl Display for ShelfContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr = match self {
+            ShelfContent::Value(a) => format!("{a}"),
+            ShelfContent::ShelfMap(shelf_map) => {
+                let strs: Vec<String> = shelf_map.into_iter().map(|(k, shelf)| format!("{k}: {shelf}")).collect();
+                format!("{{{}}}",strs.join(", "))
+            },
+        };
+        write!(f, "{}", repr)
+    }
+}
+
+impl Debug for ShelfContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return std::fmt::Display::fmt(&self, f)
+    }
+}
+
+impl TypeOrd for ShelfContent {
+    fn type_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        ShelfContent::type_rank(self).cmp(&ShelfContent::type_rank(other))
+    }
+}
+
+impl TryFrom<JSON> for ShelfContent {
     type Error = String;
 
     fn try_from(json: JSON) -> Result<Self, Self::Error> {
@@ -114,9 +155,21 @@ impl TryFrom<JSON> for Value {
                 for (k, v) in obj {
                     shelves.insert(k, v.try_into()?);
                 }
-                Ok(Value::ShelfMap(shelves))
+                Ok(ShelfContent::ShelfMap(shelves))
             }
-            val => Ok(Value::Atomic(val.try_into()?)),
+            val => Ok(ShelfContent::Value(val.try_into()?)),
+        }
+    }
+}
+
+impl From<ShelfContent> for JSON {
+    fn from(content: ShelfContent) -> Self {
+        match content {
+            ShelfContent::Value(a) => a.into(),
+            ShelfContent::ShelfMap(shelf_map) => {
+                let shelf_map: HashMap<_,_> = shelf_map.into_iter().map(|(k, shelf)| (k, JSON::from(shelf))).collect();
+                json!(shelf_map)
+            },
         }
     }
 }
@@ -127,35 +180,95 @@ pub enum StateVector {
     Leaf(usize),
 }
 
-impl StateVector {
-    fn set_clock(&mut self, val: usize) {
-        match self {
-            StateVector::Node(children, clock) => *clock = val,
-            StateVector::Leaf(clock) => *clock = val,
-        }
+impl Default for StateVector {
+    fn default() -> Self {
+        StateVector::Leaf(0)
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+impl Debug for StateVector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let repr = match self {
+            Self::Node(node, clock) => {
+                let strs: Vec<String> = node.into_iter().map(|(k, sv)| format!("{k}: {sv:?}")).collect();
+                format!("[{{{}}}, {clock}]",strs.join(", "))
+            }
+            Self::Leaf(clock) => format!("{clock}"),
+        };
+
+        write!(f, "{repr}")
+    }
+
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct Shelf {
-    content: Option<Value>,
+    content: Option<ShelfContent>,
     clock: usize,
 }
 
 impl Shelf {
+
     /// Creates a new shelf around the value with a clock value of 0
-    pub fn new(value: Value) -> Self {
+    pub fn new(content: ShelfContent) -> Self {
         return Shelf {
-            content: Some(value),
+            content: Some(content),
             clock: 0,
         };
+    }
+
+    /// Determines whether there are more shelves nested inside this one.
+    pub fn contains_shelves(&self) -> bool {
+        match self.content {
+            Some(ShelfContent::ShelfMap(_)) => true,
+            _ => false,
+        }
+    }
+    ///  Gets a Value out of the Shelf
+    pub fn get(&self, key: &str) -> Option<&Shelf> {
+        match self.content.as_ref()? {
+            ShelfContent::ShelfMap(shelf_map) => shelf_map.get(key),
+            _ => None,
+        }
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Shelf> {
+        match self.content.as_mut()? {
+            ShelfContent::ShelfMap(shelf_map) => shelf_map.get_mut(key),
+            _ => None,
+        }
+    }
+    /// Deletes any ShelfMap children with a lower clock value than the parent.
+    pub fn prune(&mut self) {
+        let shelf_map = match self.content.as_mut() {
+            Some(ShelfContent::ShelfMap(shelf_map)) => shelf_map,
+            _ => return
+        };
+        shelf_map.retain(|_,shelf| shelf.clock >= self.clock);
+    }
+
+    /// Recursively prunes the shelf tree
+    pub fn garbage_collect(&mut self) {
+        self.prune();
+        let shelf_map = match self.content.as_mut() {
+            Some(ShelfContent::ShelfMap(shelf_map)) => shelf_map,
+            _ => return
+        };
+        shelf_map.iter_mut().for_each(|(_, shelf)| {shelf.garbage_collect();});
+
     }
 }
 
 impl Display for Shelf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let repr = serde_json::to_string(self).unwrap();
-        write!(f,"{}",repr )
+        let content = self.content.as_ref().map(|v| format!("{v}")).unwrap_or("null".to_string());
+        write!(f, "[{}, {}]", content, self.clock)
+    }
+}
+
+impl Debug for Shelf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return std::fmt::Display::fmt(&self, f)
     }
 }
 
@@ -183,16 +296,28 @@ impl TryFrom<JSON> for Shelf {
                             .as_i64()
                             .ok_or("Could not convert clock into int".to_string())?
                             as usize;
-                        let shelf = Shelf {
+                        let mut shelf = Shelf {
                             content: Some(val.try_into()?),
                             clock,
                         };
+                        shelf.prune();
                         Ok(shelf)
                     }
-                    _ => Err("Could not find clock in JSON".to_string()),
+                    val => Err(format!("Could not find shelf in JSON: {}", serde_json::to_string(&val).unwrap())),
                 }
             }
             val => Err(format!("Could not covert JSON into a shelf: {:?}", val)),
+        }
+    }
+}
+
+impl From<Shelf> for JSON {
+    fn from(shelf: Shelf) -> Self {
+        if let Some(content) = shelf.content {
+            let val = ShelfContent::from(content);
+            json!([val, shelf.clock])
+        } else {
+            json!([null,shelf.clock])
         }
     }
 }
@@ -206,36 +331,40 @@ impl Mergeable<Self> for Shelf {
         // Merging two shelf maps
 
         match (this_content, other_content, clock_order) {
-            (Some(Value::ShelfMap(mut this_value)), Some(Value::ShelfMap(other_value)), _) => {
+            (Some(ShelfContent::ShelfMap(mut these_shelves)), Some(ShelfContent::ShelfMap(other_shelves)), _) => {
                 if self.clock < other.clock {
                     self.clock = other.clock;
-                    this_value.retain(|_, shelf| shelf.clock >= other.clock);
+                    these_shelves.retain(|_, shelf| shelf.clock >= other.clock);
                 }
 
-                for (key, val) in other_value.into_iter() {
-                    if let Some(sub_shelf) = this_value.get_mut(&key) {
+                for (key, val) in other_shelves.into_iter() {
+                    if let Some(sub_shelf) = these_shelves.get_mut(&key) {
                         sub_shelf.merge(val);
                     } else {
-                        this_value.insert(key, val);
+                        these_shelves.insert(key, val);
                     }
                 }
-                self.content = Some(Value::ShelfMap(this_value));
+                self.content = Some(ShelfContent::ShelfMap(these_shelves));
                 return;
             }
             (_, other_content, Ordering::Less) => {
                 self.content = other_content;
                 self.clock = other.clock;
-            }, // Update is greater so take on that value
-            (_, _, Ordering::Greater) => (),         // Self is greater so no need to update
-            (Some(Value::Atomic(this_atom)), Some(Value::Atomic(other_atom)), Ordering::Equal) => {
-                    let atom = if this_atom > other_atom {
-                        this_atom
-                    } else {
-                        other_atom
-                    };
-                    self.content = Some(Value::Atomic(atom.clone()));
+            } // Update is greater so take on that value
+            (_, _, Ordering::Greater) => (), // Self is greater so no need to update
+            (Some(ShelfContent::Value(this_value)), Some(ShelfContent::Value(other_value)), Ordering::Equal) => {
+                let value = if this_value > other_value {
+                    this_value
+                } else {
+                    other_value
+                };
+                self.content = Some(ShelfContent::Value(value));
             }
-            (Some(this_val), Some(other_val), Ordering::Equal) if Ordering::Less == this_val.type_cmp(&other_val) => self.content = Some(other_val),
+            (Some(this_val), Some(other_val), Ordering::Equal)
+                if Ordering::Less == this_val.type_cmp(&other_val) =>
+            {
+                self.content = Some(other_val)
+            }
             (this_content, other_content, Ordering::Equal) => {
                 self.content = this_content.or(other_content)
             }
@@ -247,9 +376,9 @@ impl DeltaCRDT for Shelf {
     type Delta = Shelf;
     type StateVector = StateVector;
     fn get_state_vector(&self) -> StateVector {
-        let children = self.content.as_ref().and_then(|value| match value {
-            Value::Atomic(_) => None,
-            Value::ShelfMap(shelf_map) => Some(
+        let children = self.content.as_ref().and_then(|content| match content {
+            ShelfContent::Value(_) => None,
+            ShelfContent::ShelfMap(shelf_map) => Some(
                 shelf_map
                     .iter()
                     .map(|(k, v)| (k.clone(), v.get_state_vector()))
@@ -267,41 +396,43 @@ impl DeltaCRDT for Shelf {
         match state_vector {
             StateVector::Leaf(clock) if self.clock >= *clock => Some(self.clone()),
             StateVector::Node(sv_children, clock) => match self.content.as_ref()? {
-                Value::Atomic(_) if self.clock > *clock => Some(self.clone()),
-                Value::ShelfMap(shelf_map) if self.clock < *clock => {
+                ShelfContent::Value(_) if self.clock > *clock => Some(self.clone()),
+                ShelfContent::ShelfMap(shelf_map) if self.clock < *clock => {
                     let reduced_map = shelf_map.iter().filter(|(_, v)| v.clock >= *clock);
                     let updated_shelf_map: HashMap<String, Shelf> = reduced_map
                         .filter_map(|(k, v)| {
-                            let delta = sv_children
-                                .get(k)
-                                .and_then(|sv_child| v.get_state_delta(sv_child))
-                                .or_else(|| Some(v.clone()));
+                            let delta = if let Some(sv_child) = sv_children
+                                .get(k) {
+                                    v.get_state_delta(sv_child)
+                                } else {
+                                    (*clock <= v.clock).then(|| v.clone())
+                                };
                             Some((k.clone(), delta?))
                         })
                         .collect();
-                    let has_elements = !updated_shelf_map.is_empty();
+                    let has_elements = !updated_shelf_map.is_empty() || self.clock != *clock; // Even if empty, it is an update if clocks don't match
                     has_elements.then(|| Shelf {
-                        content: Some(Value::ShelfMap(updated_shelf_map)),
+                        content: Some(ShelfContent::ShelfMap(updated_shelf_map)),
                         clock: self.clock,
                     })
                 }
-                Value::ShelfMap(shelf_map) => {
+                ShelfContent::ShelfMap(shelf_map) => {
                     let updated_shelf_map = shelf_map
                         .iter()
                         .filter_map(|(k, v)| {
-                            let delta = sv_children
-                                .get(k)
-                                .and_then(|sv_child| v.get_state_delta(sv_child))
-                                .or_else(|| Some(v.clone()));
+                            let delta = if let Some(sv_child) = sv_children.get(k) {
+                                v.get_state_delta(sv_child)
+                            } else {
+                                (self.clock <= v.clock).then(|| v.clone())
+                            };
                             Some((k.clone(), delta?))
                         })
                         .collect();
 
                     Some(Shelf {
-                        content: Some(Value::ShelfMap(updated_shelf_map)),
+                        content: Some(ShelfContent::ShelfMap(updated_shelf_map)),
                         clock: self.clock,
                     })
-                    
                 }
                 _ => None,
             },
@@ -310,39 +441,19 @@ impl DeltaCRDT for Shelf {
     }
 }
 
-impl Shelf {
-    /// Determines whether there are more shelves nested inside this one.
-    pub fn contains_shelves(&self) -> bool {
-        match self.content {
-            Some(Value::ShelfMap(_)) => true,
-            _ => false,
-        }
-    }
-    ///  Gets a Value out of the Shelf
-    pub fn get(&self, key: &str) -> Option<&Shelf> {
-        match self.content.as_ref()? {
-            Value::ShelfMap(shelf_map) => shelf_map.get(key),
-            _ => None,
-        }
-    }
 
-    pub fn get_mut(&mut self, key: &str) -> Option<&mut Shelf> {
-        match self.content.as_mut()? {
-            Value::ShelfMap(shelf_map) => shelf_map.get_mut(key),
-            _ => None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
 
-    use std::borrow::BorrowMut;
+    use core::num;
 
-    use crate::wrap_crdt::*;
+    use rand::{prelude::StdRng, SeedableRng};
 
-    fn val(a: Atomic) -> Option<Value> {
-        Some(Value::Atomic(a))
+    use crate::{shelf_fuzzer::ShelfFuzzer, wrap_crdt::*};
+
+    fn val(a: Value) -> Option<ShelfContent> {
+        Some(ShelfContent::Value(a))
     }
     fn merge(branch: Shelf, mut main: Shelf) -> Shelf {
         let sv = main.get_state_vector();
@@ -351,16 +462,16 @@ mod tests {
         main
     }
 
-    fn array(elements: Vec<isize>) -> Option<Value> {
-        val(Atomic::Array(
-            elements.into_iter().map(|el| Atomic::Int(el)).collect(),
+    fn array(elements: Vec<isize>) -> Option<ShelfContent> {
+        val(Value::Array(
+            elements.into_iter().map(|el| Value::Int(el)).collect(),
         ))
     }
 
     #[test]
     fn test_init() {
         Shelf {
-            content: val(Atomic::Bool(true)),
+            content: val(Value::Bool(true)),
             clock: 1,
         };
     }
@@ -368,10 +479,10 @@ mod tests {
     #[test]
     fn test_clock() {
         let mut shelf = Shelf {
-            content: val(Atomic::Int(1)),
+            content: val(Value::Int(1)),
             clock: 1,
         };
-        let y = val(Atomic::Int(2));
+        let y = val(Value::Int(2));
         let shelf2 = Shelf {
             content: y,
             clock: 2,
@@ -382,15 +493,15 @@ mod tests {
     }
     #[test]
     fn test_object_override() {
-        let x = Value::ShelfMap(HashMap::new());
+        let x = ShelfContent::ShelfMap(HashMap::new());
         let shelf: Shelf = Shelf::new(x);
-        let y = val(Atomic::Int(2)).unwrap();
+        let y = val(Value::Int(2)).unwrap();
         let shelf2 = Shelf::new(y);
         let shelf = merge(shelf, shelf2);
 
-        if let Some(Value::ShelfMap(_)) = shelf.content {
+        if let Some(ShelfContent::ShelfMap(_)) = shelf.content {
         } else {
-            panic!("Expected map to override the atomic value")
+            panic!("Expected map to override the value")
         }
     }
     #[test]
@@ -406,8 +517,8 @@ mod tests {
         };
         let shelf = merge(shelf2, shelf);
 
-        if let Some(Value::Atomic(Atomic::Array(list))) = shelf.content {
-            if let Atomic::Int(n) = list[0] {
+        if let Some(ShelfContent::Value(Value::Array(list))) = shelf.content {
+            if let Value::Int(n) = list[0] {
                 assert_eq!(n, 2)
             } else {
                 panic!("not an int {:?}", list[0]);
@@ -418,21 +529,21 @@ mod tests {
     }
     #[test]
     fn test_recursive_diff() {
-        let sub_shelf = Shelf::new(val(Atomic::Int(1)).unwrap());
+        let sub_shelf = Shelf::new(val(Value::Int(1)).unwrap());
 
         let mut dict = HashMap::new();
         dict.insert("a".to_string(), sub_shelf);
-        let shelf: Shelf = Shelf::new(Value::ShelfMap(dict));
+        let shelf: Shelf = Shelf::new(ShelfContent::ShelfMap(dict));
 
-        let sub_shelf2 = Shelf::new(val(Atomic::Int(2)).unwrap());
+        let sub_shelf2 = Shelf::new(val(Value::Int(2)).unwrap());
 
         let mut dict2 = HashMap::new();
         dict2.insert("b".to_string(), sub_shelf2);
-        let shelf2 = Shelf::new(Value::ShelfMap(dict2));
+        let shelf2 = Shelf::new(ShelfContent::ShelfMap(dict2));
 
         let shelf = merge(shelf2, shelf);
 
-        if let Some(Value::ShelfMap(m)) = shelf.content {
+        if let Some(ShelfContent::ShelfMap(m)) = shelf.content {
             assert!(m.len() == 2)
         }
     }
@@ -538,9 +649,14 @@ mod tests {
         }, 0]  }, 0])
         .try_into()
         .unwrap();
-        let res: Option<Value> =
-            (|| shelf.get_mut("user")?.get_mut("cursor")?.get_mut("left").and_then(|s| s.content.take()))();
-        if let Some(Value::Atomic(Atomic::String(s))) = res {
+        let res: Option<ShelfContent> = (|| {
+            shelf
+                .get_mut("user")?
+                .get_mut("cursor")?
+                .get_mut("left")
+                .and_then(|s| s.content.take())
+        })();
+        if let Some(ShelfContent::Value(Value::String(s))) = res {
             assert_eq!(s, "a");
         } else {
             panic!("Unexpected value {:?}", res)
@@ -578,32 +694,39 @@ mod tests {
 
         let tests = match data {
             JSON::Array(tests) => tests,
-            _ => panic!("Must be array of tests")
+            _ => panic!("Must be array of tests"),
         };
 
         let tests = tests.into_iter().enumerate().map(|(i, test)| {
             let mut test = match test {
                 JSON::Object(obj) => obj,
-                val => panic!("{val:?} is not an object")
+                val => panic!("{val:?} is not an object"),
             };
             let shelves: Vec<Shelf> = match test.remove("shelves") {
                 Some(JSON::Array(shelves)) => {
-                    let possible_shelves:Result<_,_> = shelves.into_iter().map(Shelf::try_from).collect();
+                    let possible_shelves: Result<_, _> =
+                        shelves.into_iter().map(Shelf::try_from).collect();
                     possible_shelves.unwrap()
                 }
-                val => panic!("{val:?} cannot be turned into shelves")
+                val => panic!("{val:?} cannot be turned into shelves"),
             };
-            let expected = test.remove("expected").map(Shelf::try_from).and_then(|v| v.ok());
-            let description = test.remove("description").and_then(|v| match v {
-                JSON::String(s) => Some(format!("Test {}: {}", i+1,s)),
-                _ => None
-            }).unwrap_or_default();
-            
+            let expected = test
+                .remove("expected")
+                .map(Shelf::try_from)
+                .and_then(|v| v.ok());
+            let description = test
+                .remove("description")
+                .and_then(|v| match v {
+                    JSON::String(s) => Some(format!("Test {}: {}", i + 1, s)),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
             (shelves, expected, description)
         });
         for (mut shelves, expected, description) in tests {
             for i in 0..shelves.len() {
-                for j in (i+1)..shelves.len() {
+                for j in (i + 1)..shelves.len() {
                     // Forwards
                     let mut receiver = shelves[i].clone();
                     let sender = shelves[j].clone();
@@ -631,10 +754,71 @@ mod tests {
                 }
                 // Since the first CRDT has now received updates from all others, it should have the expected value.
                 if let Some(expected) = expected.as_ref() {
-                    assert_eq!(&shelves[i],expected, "Did not match expected\n {description}");
+                    assert_eq!(
+                        &shelves[i], expected,
+                        "Did not match expected\n {description}"
+                    );
                 }
-                
             }
+        }
+    }
+
+    #[test]
+    /// Procedurally generates sets shelves and ensures that they all converge.
+    fn test_generated_shelves() {
+        let mut fuzzer = ShelfFuzzer {
+            rng: StdRng::seed_from_u64(1),
+            depth_range: 1..3,
+            branch_range: 1..3,
+            value_range: 0..6,
+        };
+        let num_tests: usize = 2000;
+        for i in 0..num_tests {
+            let shelf = Shelf::try_from(fuzzer.generate_json_shelf()).unwrap();
+            let shelf2 = Shelf::try_from(fuzzer.generate_json_shelf()).unwrap();
+
+            if shelf == shelf2 {
+                continue;
+            }
+
+            // Forwards
+            let mut receiver = shelf.clone();
+            let sender = shelf2.clone();
+            // println!("Receiver: {receiver}\nSender:   {sender}");
+            let sv = receiver.get_state_vector();
+            // println!("State Vector:  {sv:?}");
+            
+            let delta = sender.get_state_delta(&sv);
+            let cached_delta = delta.clone();
+            if let Some(delta) = delta {
+                receiver.merge(delta);
+            }
+            // println!("Result:  {receiver}");
+
+            // Backwards
+            // println!("\n\nBACKWARDS");
+            let mut receiver_back = shelf2.clone();
+            let sender_back = shelf.clone();
+            let sv_back = receiver_back.get_state_vector();
+            // println!("State Vector:  {sv_back:?}");
+            let delta_back = sender_back.get_state_delta(&sv_back);
+            let cached_delta_back = delta_back.clone();
+            if let Some(delta) = delta_back {
+                receiver_back.merge(delta);
+            }
+            let id_delta = cached_delta.clone();
+            let report = || {
+                format!("\nTEST {i}\nReceiver: {shelf}, \nSender {shelf2}, \nStateVector {sv:?}, \nDelta: {id_delta:?} \nStateVectorBACK: {sv_back:?}, \nDeltaBACK {cached_delta_back:?}")
+            };
+            
+
+            // Ensure both forwards and backwards match
+            assert_eq!(receiver, receiver_back, "Not commutative {}", report());
+            if let Some(delta) = cached_delta {
+                receiver.merge(delta);
+                assert_eq!(receiver, receiver_back, "Not idempotent {}", report());
+            }
+            
         }
     }
 }
