@@ -1,0 +1,25 @@
+{
+  "name": "benchmarks",
+  "version": "1.0.0",
+  "description": "JavaScript-based CRDT benchmarks.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "bench": "node  --experimental-wasm-modules index.js",
+    "test": "node  --experimental-wasm-modules test.js"
+  },
+  "keywords": [
+    "benchmark"
+  ],
+  "author": "waidhoferj",
+  "license": "MIT",
+  "dependencies": {
+    "lib0": "^0.2.51",
+    "y-protocols": "^1.0.5",
+    "yjs": "^13.5.38",
+    "shelf": "file:../shelf-js/pkg"
+  },
+  "devDependencies": {
+    "benny": "^3.7.1"
+  }
+}

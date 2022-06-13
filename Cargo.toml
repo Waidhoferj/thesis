@@ -4,7 +4,8 @@ members = [
     "shelf-crdt",
     "networking",
     "crdt-playground",
-    "shelf-crdt-macros"
+    "shelf-crdt-macros",
+    "shelf-js"
 ]
 
 resolver = "2"

@@ -1,8 +1,8 @@
-use std::ops::Deref;
+use bincode;
 
 // pub mod temporal;
 // pub mod wrap_crdt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 pub trait Incrementable {
     /// Increments the counter of the source type. It is expected that the type monotonically increases.
     fn increment(&mut self);
@@ -29,4 +29,12 @@ pub trait DeltaCRDT {
     type StateVector: Serialize + DeserializeOwned;
     fn get_state_vector(&self) -> Self::StateVector;
     fn get_state_delta(&self, sv: &Self::StateVector) -> Option<Self::Delta>;
+
+    fn encode_state_vector(&self) -> Vec<u8> {
+        bincode::serialize(&self.get_state_vector()).unwrap()
+    }
+
+    fn encode_state_delta(&self, sv: &Self::StateVector) -> Vec<u8> {
+        bincode::serialize(&self.get_state_delta(sv)).unwrap()
+    }
 }
