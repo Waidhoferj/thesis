@@ -127,10 +127,11 @@ impl ShelfFuzzer {
         children.extend(values);
 
         let children = JSON::Object(children);
-        let clock: u16 =
-            self.rng
-                .gen_range((depth.checked_sub(2).unwrap_or(0))..(depth + 2)) as u16;
-        json!([children, clock])
+        if include_clocks {
+            self.wrap_in_clock(children, depth)
+        } else {
+            children
+        }
     }
     fn wrap_in_clock(&mut self, value: JSON, depth: usize) -> JSON {
         let clock = self
