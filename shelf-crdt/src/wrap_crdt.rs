@@ -506,11 +506,9 @@ impl DeltaCRDT for Shelf {
 
 
 
-
 #[cfg(test)]
 mod tests {
 
-    use core::num;
 
     use rand::{prelude::StdRng, SeedableRng};
 

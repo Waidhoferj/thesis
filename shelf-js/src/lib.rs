@@ -7,13 +7,13 @@ use std::convert::{TryFrom, TryInto};
 use std::ops::Range;
 use std::rc::Rc;
 
-use js_sys::{self, Array, Uint8Array};
+use js_sys::{self, Array, JsString, Uint8Array};
 use rand::prelude::StdRng;
 use rand::SeedableRng;
 use serde_json;
 use serde_json::Value as JSON;
 use shelf_crdt::shelf_fuzzer::ShelfFuzzer;
-use shelf_crdt::wrap_crdt::Value;
+use shelf_crdt::traits::{DeltaCRDT, Mergeable};
 use shelf_crdt::wrap_crdt::{Shelf as ShelfCRDT, ShelfContent};
 use wasm_bindgen::prelude::*;
 
@@ -29,7 +29,7 @@ extern "C" {
 }
 
 #[wasm_bindgen]
-struct Fuzzer(ShelfFuzzer);
+pub struct Fuzzer(ShelfFuzzer);
 
 #[wasm_bindgen]
 impl Fuzzer {
@@ -40,11 +40,11 @@ impl Fuzzer {
     }
 
     #[wasm_bindgen(js_name = "setSeed")]
-    pub fn set_seed(&mut self, seed: u64) {
-        self.0.set_seed(seed);
+    pub fn set_seed(&mut self, seed: u32) {
+        self.0.set_seed(seed as u64);
     }
 
-    #[wasm_bindgen(js_name = "generateShelfContent")]
+    #[wasm_bindgen(js_name = "generateContent")]
     pub fn generate_shelf_content(&mut self) -> Result<JsValue, JsValue> {
         JsValue::from_serde(&self.0.generate_json_values())
             .or_else(|_| Err(JsValue::from("Failed to convert shelf to JSON")))
@@ -55,7 +55,6 @@ impl Fuzzer {
         let start: usize = start.as_f64()? as usize;
         let end = js_sys::Reflect::get(array, &JsValue::from(1_usize)).ok()?;
         let end: usize = end.as_f64()? as usize;
-        let x = end;
         Some(start..end)
     }
 
@@ -71,7 +70,7 @@ impl Fuzzer {
         let depth_range = js_sys::Reflect::get(config, &JsValue::from("depthRange"))
             .ok()
             .and_then(|val| Self::extract_range(&val))
-            .unwrap_or(2..6);
+            .unwrap_or(1..2);
         let seed = js_sys::Reflect::get(config, &JsValue::from("seed")).ok()?;
         let seed = seed.as_f64()? as u64;
         Some(ShelfFuzzer {
@@ -145,7 +144,7 @@ impl Awareness {
     pub fn to_string(&self) -> String {
         let mut users = Vec::new();
         for (user, shelf) in self.users.iter() {
-            users.push(format!("{user}: {}", RefCell::borrow(&*shelf))); // TODO: doesn't have to be mut
+            users.push(format!("{user}: {}", RefCell::borrow(&*shelf)));
         }
         let users = users.join(", ");
         let uid = self.uid.as_str();
@@ -264,19 +263,6 @@ impl ShelfView {
         Ok(())
     }
 
-    // #[wasm_bindgen(method, structural, indexing_setter)]
-    // pub fn set(&mut self, prop: &str, val: &JsValue) -> Result<(), String> {
-    //     let json: JSON = val.into_serde().or_else(|e| Err(e.to_string()))?;
-    //     let new_content = ShelfContent::from_json_values(json)?;
-    //     let mut shelf = self.target.borrow_mut();
-    //     shelf.set(prop.to_string(), new_content);
-    //     Ok(())
-    // }
-    // #[wasm_bindgen(method, structural, indexing_deleter)]
-    // pub fn delete(&mut self, prop: &str) {
-    //     println!("Delete");
-    // }
-
     fn resolve_path(&self, path: &Vec<String>) -> Option<Ref<ShelfCRDT>> {
         let target = RefCell::borrow(&*self.target);
         let mut cur = target;
@@ -291,6 +277,103 @@ impl ShelfView {
         let mut cur = target;
         for key in path.iter() {
             cur = RefMut::map(cur, |shelf| shelf.get_mut(&key).unwrap());
+        }
+        Some(cur)
+    }
+}
+
+#[wasm_bindgen]
+pub struct Shelf(ShelfCRDT);
+
+#[wasm_bindgen]
+impl Shelf {
+    #[wasm_bindgen(constructor)]
+    pub fn new(content: JsValue) -> Shelf {
+        let inner = if content.is_undefined() {
+            ShelfCRDT::default()
+        } else {
+            let values = content.into_serde().unwrap_throw();
+            ShelfCRDT::from_json_values(values).unwrap_throw()
+        };
+        Self(inner)
+    }
+    pub fn get(&self, path: Array) -> JsValue {
+        let path = Self::convert_path(path);
+        if let Some(path) = path {
+            self.resolve_path(&path)
+                .map(|shelf| shelf.clone().to_json_values())
+                .and_then(|json| JsValue::from_serde(&json).ok())
+                .unwrap_or(JsValue::null())
+        } else {
+            JsValue::null()
+        }
+    }
+
+    pub fn set(&mut self, path: Array, contents: JsValue) {
+        if path.length() < 1 {
+            return;
+        }
+        let path = Self::convert_path(path).unwrap_throw();
+        let last_idx = path.len() - 1;
+        let shelf = self.resolve_path_mut(&path[..last_idx]);
+        if let Some(shelf) = shelf {
+            let json = contents.into_serde().unwrap_throw();
+            let content = ShelfContent::from_json_values(json).unwrap_throw();
+            let key = path[last_idx].clone();
+            shelf.set(key, content);
+        }
+    }
+
+    #[wasm_bindgen(js_name = "toString")]
+    pub fn to_string(&self) -> String {
+        format!("Shelf({})", self.0)
+    }
+
+    #[wasm_bindgen(js_name = "toJson")]
+    pub fn to_json(&self) -> JsValue {
+        let json: JSON = self.0.clone().into();
+        JsValue::from_serde(&json).unwrap();
+        JsValue::from_serde(&json).unwrap()
+    }
+
+    #[wasm_bindgen(js_name = "encodeStateVector")]
+    pub fn encode_state_vector(&self) -> Vec<u8> {
+        self.0.encode_state_vector()
+    }
+
+    #[wasm_bindgen(js_name = "encodeStateDelta")]
+    pub fn encode_state_delta(&self, sv: Uint8Array) -> JsValue {
+        self.0
+            .encode_state_delta(&sv.to_vec())
+            .map(|v| Uint8Array::from(&v[..]).into())
+            .unwrap_or(JsValue::null())
+    }
+    #[wasm_bindgen]
+    pub fn merge(&mut self, delta_bytes: Uint8Array) {
+        let delta: ShelfCRDT = bincode::deserialize(&delta_bytes.to_vec()[..]).unwrap();
+        self.0.merge(delta);
+    }
+
+    /// Converts a JavaScript Array to a path of strings. Returns `None` on failure
+    #[inline]
+    fn convert_path(list: Array) -> Option<Vec<String>> {
+        list.iter().map(|segment| segment.as_string()).collect()
+    }
+
+    /// Gets an immutable reference to the shelf at the provided path.
+    fn resolve_path(&self, path: &[String]) -> Option<&ShelfCRDT> {
+        let mut cur = &self.0;
+        for key in path.iter() {
+            cur = cur.get(&key).unwrap();
+        }
+        Some(cur)
+    }
+
+    /// Gets a mutable reference to the shelf at the provided path.
+    fn resolve_path_mut(&mut self, path: &[String]) -> Option<&mut ShelfCRDT> {
+        let mut cur = &mut self.0;
+        for key in path.iter() {
+            cur = cur.get_mut(&key).unwrap();
         }
         Some(cur)
     }
