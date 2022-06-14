@@ -14,10 +14,12 @@
   "author": "waidhoferj",
   "license": "MIT",
   "dependencies": {
+    "automerge": "^1.0.1-preview.7",
     "lib0": "^0.2.51",
+    "object-sizeof": "^1.6.3",
+    "shelf": "file:../shelf-js/pkg",
     "y-protocols": "^1.0.5",
-    "yjs": "^13.5.38",
-    "shelf": "file:../shelf-js/pkg"
+    "yjs": "^13.5.38"
   },
   "devDependencies": {
     "benny": "^3.7.1"

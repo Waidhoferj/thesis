@@ -1,23 +1,18 @@
 
 /* benchmark.js */
 import * as b from "benny"
+import * as sizeOfMod from "object-sizeof"
+const sizeOf = sizeOfMod.default
 import * as awareness from 'y-protocols/awareness.js'
 import * as Y from 'yjs'
 import * as t from 'lib0/testing'
 import * as shelf from "shelf"
-let {Fuzzer, Awareness:ShelfAwareness} = shelf
+let {Fuzzer, Awareness:ShelfAwareness, Shelf} = shelf
 let {Awareness} = awareness
+import * as fs from "fs"
+import * as Automerge from 'automerge'
 
 
-function generateContent(config) {
-  let fuzzer = new Fuzzer(config)
-  return fuzzer.generateShelfContent()
-}
-
-
-
-
-function benchmark() {
 
 // N additions
 // size after deletions (pruning)
@@ -26,41 +21,152 @@ function benchmark() {
 // Size of encoding
 // Size of crdt
 // Size of crdt metadata
-//
+
+
+function testMemoryFootprint() {
+  testDeltaSize()
+  testSizeAfterDeletion()
+  testCRDTSize()
+}
+/**
+ * Fuzzer generates two random JSON trees. Trees are wrapped in 
+ */
+function testDeltaSize() {
+  const shelfCRDT= []
+  const yjs = []
+  const automerge = []
+  const N = 1000
+  const fuzzer = new Fuzzer({seed:1, valueRange: [100,200], depthRange: [3,5], branchRange: [1,5]})
+
+    const doc1 = new Y.Doc()
+    doc1.clientID = 0
+    const doc2 = new Y.Doc()
+    doc2.clientID = 1
+    const aw1 = new awareness.Awareness(doc1)
+    const aw2 = new awareness.Awareness(doc2)
+
+    for(let i = 0; i < N; i++){
+    const firstValues = fuzzer.generateContent()
+    const secondValues = fuzzer.generateContent()
+    if (deepEq(firstValues,secondValues)) {
+      continue // Not a fair comparison if all the values are the same. We only count deltas that actually exist.
+    }
+
+    // Test Yjs
+    aw1.setLocalState(firstValues)
+    aw2.setLocalState(secondValues)
+    const enc = awareness.encodeAwarenessUpdate(aw2, Array.from(aw2.getStates().keys()))
+    yjs.push(enc.byteLength)
+
+    // Test Shelf
+    const shelf1 = new Shelf(firstValues)
+    const shelf2 = new Shelf(secondValues)
+    const sv = shelf1.encodeStateVector()
+    const delta = shelf2.encodeStateDelta(sv)
+
+    shelfCRDT.push(delta.byteLength)
+
+    // Test Automerge
+    let autoDoc = Automerge.init()
+    autoDoc = Automerge.change(autoDoc, 'Set state', doc => {
+      doc.contents = secondValues
+    })
+    const encodedState = Automerge.save(autoDoc)
+    automerge.push(encodedState.byteLength)
+    }
+
+    const report = {
+      shelfCRDT,
+      yjs,
+      automerge
+    }
+
+    fs.writeFileSync("benchmark/results/delta-size.json", JSON.stringify(report))
+
+}
+
+function testSizeAfterDeletion() {
+  // Yjs
+
+
+  // Shelf
+
+  //Automerge
+
+  console.log("TODO: testSizeAfterDeletion")
+}
+
+/**
+ * How do the sizes of the CRDTs compare? Maybe stringify each?
+ * This should be done manually. TODO: sizeOf is probably incorrect. Currently a placeholder
+ */
+function testCRDTSize() {
+  const N = 1000
+  const fuzzer = new Fuzzer({seed:1, valueRange: [100,200], depthRange: [3,6], branchRange: [1,5]})
+    fuzzer.setSeed(1)
+    const yDoc = new Y.Doc()
+    yDoc.clientID = 0
+    const yjsAwareness = new awareness.Awareness(yDoc)
+    let values = fuzzer.generateContent()
+    const valueSize = sizeOf(values)
+    yjsAwareness.setLocalState(values)
+   const yjsSize = sizeOf(yjsAwareness)
+
+   const shelfCRDT = new Shelf(values)
+   const shelfSize = sizeOf(shelfCRDT)
+
+   let autoDoc = Automerge.init()
+    autoDoc = Automerge.change(autoDoc, 'Set state', doc => {
+      doc.contents = values
+    })
+   const automergeSize = sizeOf(autoDoc)
+
+
+   const report = {
+    shelfCRDT: [shelfSize],
+    yjs: [yjsSize],
+    automerge: [automergeSize],
+    values: [valueSize]
+  }
+
+  fs.writeFileSync("benchmark/results/crdt-size.json", JSON.stringify(report))
+
+   console.log("TODO: testCRDTSize")
+}
+
+function benchmark() {
 let benchSettings = {
 
   B1: {
     n : 1000,
-    fuzzerConfig: {seed:1, value_range: [1000,1000+1], depthRange: [1,2], branchRange: [0,1]}
+    fuzzerConfig: {seed:1, valueRange: [1000,1000+1], depthRange: [0,1], branchRange: [0,5]}
   }
 }
 b.suite(
   'B1: Test N additions',
 
-  // b.add('ShelfCRDT', () => {
-  //   let {n, fuzzerConfig} = benchSettings.B1
-  //   let fuzzer = new Fuzzer({seed: fuzzerConfig.seed})
+  b.add('ShelfCRDT', () => {
+    let {n, fuzzerConfig} = benchSettings.B1
+    let fuzzer = new Fuzzer(fuzzerConfig)
+    let content = fuzzer.generateContent()
+    let insertElements = fuzzer.generateContent()
+    let crdt = new Shelf(content)
 
-  //   let elementFuzzer = new Fuzzer(fuzzerConfig)
-  //   let insertElements = elementFuzzer.generateShelfContent()
-  //   let crdt = new ShelfAwareness("1")
-  //   crdt.state = insertElements
-  //   return () => {
-  //     for (let [key, val] of Object.entries(insertElements)) {
-  //       crdt.state.set(key,val)
-  //     }
-  //   }
-  // }),
+    return () => {
+      for (let [key, val] of Object.entries(insertElements)) {
+        crdt.set([key],val)
+      }
+    }
+  }),
 
   b.add('Yjs Awareness CRDT', () => {
     let {n, fuzzerConfig} = benchSettings.B1
-    let fuzzer = new Fuzzer({seed: fuzzerConfig.seed})
-    let content = fuzzer.generateShelfContent()
+    let fuzzer = new Fuzzer(fuzzerConfig)
+    let content = fuzzer.generateContent()
     let doc = new Y.Doc(1)
     let crdt = new Awareness(doc)
-    let elementFuzzer = new Fuzzer(fuzzerConfig)
-    let insertElements = elementFuzzer.generateShelfContent()
-    crdt.setLocalState({})
+    let insertElements = fuzzer.generateContent()
+    crdt.setLocalState(content)
     return () => {
       for (let [key, val] of Object.entries(insertElements)) {
         crdt.setLocalStateField(key,val)
@@ -69,30 +175,101 @@ b.suite(
 
   }),
 
+
+  b.add('Automerge', () => {
+    let {n, fuzzerConfig} = benchSettings.B1
+    let fuzzer = new Fuzzer(fuzzerConfig)
+    let content = fuzzer.generateContent()
+    let insertElements = fuzzer.generateContent()
+    let autoDoc = Automerge.init()
+    autoDoc = Automerge.change(autoDoc, 'Set initial state', doc => {
+      doc.contents = content
+    })
+
+    return () => {
+      for (let [key, val] of Object.entries(insertElements)) {
+        autoDoc = Automerge.change(autoDoc, key, doc => {
+          doc[key] = val
+        })
+      }
+    }
+
+  }),
+
   b.cycle(),
   b.complete(),
-  b.save({ file: 'reduce', version: '1.0.0' }),
-  b.save({ file: 'reduce', format: 'chart.html' }),
+  b.save({ file: 'additions', version: '1.0.0' }),
+  b.save({ file: 'additions', format: 'chart.html' }),
 )
 
+b.suite(
+  'B2: Test Merge',
 
-// b.suite(
-//   'B2: Size of encoding',
+  b.add('ShelfCRDT', () => {
+    let {fuzzerConfig} = benchSettings.B1
+    let fuzzer = new Fuzzer(fuzzerConfig)
+    let first = new Shelf(fuzzer.generateContent())
+    let second = new Shelf(fuzzer.generateContent())
 
-//   b.add('ShelfCRDT', () => {
-    
-//   }),
-//   b.add('Yjs Awareness CRDT', () => {
-//     let fuzzer = new Fuzzer({seed: 1})
-//     let content = fuzzer.generateShelfContent()
-//     let doc = new Y.Doc(1)
-//     let crdt = new Awareness(doc)
-//     crdt.setLocalState(content)
-//   }),
+    return () => {
+      let sv = first.encodeStateVector()
+      let delta = second.encodeStateDelta(sv)
+      if (delta) {
+        first.merge(delta)
+      } else {
+        throw Error("There should be a delta for the shelfCRDT")
+      }
+      
+    }
+  }),
 
-//   b.cycle(),
-//   b.complete(),
-// )
+  b.add('Yjs Awareness CRDT', () => {
+    let {n, fuzzerConfig} = benchSettings.B1
+    let fuzzer = new Fuzzer(fuzzerConfig)
+    const doc1 = new Y.Doc()
+    doc1.clientID = 0
+    const doc2 = new Y.Doc()
+    doc2.clientID = 1
+    const aw1 = new awareness.Awareness(doc1)
+    aw1.setLocalState(fuzzer.generateContent())
+    const aw2 = new awareness.Awareness(doc2)
+    aw2.setLocalState(fuzzer.generateContent())
+
+    return () => {
+      const enc = awareness.encodeAwarenessUpdate(aw1, Array.from(aw1.getStates().keys()))
+      awareness.applyAwarenessUpdate(aw2, enc, 'custom')
+    }
+
+  }),
+
+  b.add('Automerge', () => {
+    let {n, fuzzerConfig} = benchSettings.B1
+    let fuzzer = new Fuzzer(fuzzerConfig)
+    let first = new Shelf(fuzzer.generateContent())
+    let second = new Shelf(fuzzer.generateContent())
+    let firstDoc = Automerge.init()
+    let secondDoc = Automerge.init()
+    firstDoc = Automerge.change(firstDoc, "", doc => {
+      doc.contents = first
+    })
+
+    secondDoc = Automerge.change(secondDoc, "", doc => {
+      doc.contents = second
+    })
+
+    return () => {
+      const encodedState = Automerge.save(firstDoc)
+      const update = Automerge.load(encodedState)
+      Automerge.merge(update, secondDoc)
+    }
+
+  }),
+
+  b.cycle(),
+  b.complete(),
+  b.save({ file: 'merges', version: '1.0.0' }),
+  b.save({ file: 'merges', format: 'chart.html' }),
+)
 }
 
 function test() {
@@ -103,7 +280,7 @@ function test() {
   const aw1 = new awareness.Awareness(doc1)
   const aw2 = new awareness.Awareness(doc2)
   aw1.on('update', /** @param {any} p */ ({ added, updated, removed }) => {
-    const enc = awareness.encodeAwarenessUpdate(aw1, added.concat(updated).concat(removed))
+    const enc = awareness.encodeAwarenessUpdate(aw1, Array.from(awareness.getStates().keys()))
     awareness.applyAwarenessUpdate(aw2, enc, 'custom')
   })
   let lastChangeLocal = /** @type {any} */ (null)
@@ -142,4 +319,13 @@ function test() {
 
 }
 
-benchmark()
+function generateReports() {
+  benchmark()
+  testMemoryFootprint()
+}
+
+function deepEq(ob1, ob2) {
+  return JSON.stringify(ob1) == JSON.stringify(ob2)
+}
+
+generateReports()
