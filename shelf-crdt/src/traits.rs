@@ -1,4 +1,4 @@
-use bincode;
+use bincode::{self, ErrorKind};
 
 // pub mod temporal;
 // pub mod wrap_crdt;
@@ -34,7 +34,13 @@ pub trait DeltaCRDT {
         bincode::serialize(&self.get_state_vector()).unwrap()
     }
 
-    fn encode_state_delta(&self, sv: &Self::StateVector) -> Vec<u8> {
-        bincode::serialize(&self.get_state_delta(sv)).unwrap()
+    fn encode_state_delta(&self, sv_bytes: &[u8]) -> Option<Vec<u8>> {
+        let sv = bincode::deserialize(sv_bytes).unwrap();
+        self.get_state_delta(&sv)
+            .map(|delta| bincode::serialize(&delta).unwrap())
+    }
+
+    fn decode_state_delta(&self, data: &[u8]) -> Result<Self::Delta, Box<ErrorKind>> {
+        bincode::deserialize(data)
     }
 }
