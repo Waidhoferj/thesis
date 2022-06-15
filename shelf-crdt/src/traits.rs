@@ -25,22 +25,8 @@ pub trait TypeOrd {
 }
 
 pub trait DeltaCRDT {
-    type Delta: Serialize + DeserializeOwned;
-    type StateVector: Serialize + DeserializeOwned;
+    type Delta;
+    type StateVector;
     fn get_state_vector(&self) -> Self::StateVector;
     fn get_state_delta(&self, sv: &Self::StateVector) -> Option<Self::Delta>;
-
-    fn encode_state_vector(&self) -> Vec<u8> {
-        bincode::serialize(&self.get_state_vector()).unwrap()
-    }
-
-    fn encode_state_delta(&self, sv_bytes: &[u8]) -> Option<Vec<u8>> {
-        let sv = bincode::deserialize(sv_bytes).unwrap();
-        self.get_state_delta(&sv)
-            .map(|delta| bincode::serialize(&delta).unwrap())
-    }
-
-    fn decode_state_delta(&self, data: &[u8]) -> Result<Self::Delta, Box<ErrorKind>> {
-        bincode::deserialize(data)
-    }
 }
