@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value as JSON};
 
@@ -108,22 +109,25 @@ impl From<Value> for JSON {
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
-pub enum ShelfContent {
-    Value(Value),
-    ShelfMap(HashMap<String, Shelf>),
+pub enum ShelfContent<T: Serialize + DeserializeOwned + PartialEq + Clone> {
+    Value(T),
+    ShelfMap(HashMap<String, Shelf<T>>),
 }
 
-impl ShelfContent {
+impl<T> ShelfContent<T> {
     /// Returns the ordering of types, with higher values having more precedence than lower values.
     #[inline(always)]
-    fn type_rank(content: &ShelfContent) -> u8 {
+    fn type_rank(content: &Self) -> u8 {
         match content {
             ShelfContent::Value(_) => 1,
             ShelfContent::ShelfMap(_) => 2,
         }
     }
 
-    pub fn from_json_values(json: JSON) -> Result<ShelfContent, String> {
+}
+impl ShelfContent<Value> {
+
+    pub fn from_json_values(json: JSON) -> Result<Self, String> {
         match json {
             JSON::Object(obj) => {
                 let mut shelves: HashMap<String, Shelf> = HashMap::new();
@@ -148,7 +152,7 @@ impl ShelfContent {
     }
 
 
-impl Display for ShelfContent {
+impl<T : Display> Display for ShelfContent<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let repr = match self {
             ShelfContent::Value(a) => format!("{a}"),
@@ -161,19 +165,19 @@ impl Display for ShelfContent {
     }
 }
 
-impl Debug for ShelfContent {
+impl<T: Debug> Debug for ShelfContent<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return std::fmt::Display::fmt(&self, f)
     }
 }
 
-impl TypeOrd for ShelfContent {
+impl<T> TypeOrd for ShelfContent<T> {
     fn type_cmp(&self, other: &Self) -> std::cmp::Ordering {
         ShelfContent::type_rank(self).cmp(&ShelfContent::type_rank(other))
     }
 }
 
-impl TryFrom<JSON> for ShelfContent {
+impl TryFrom<JSON> for ShelfContent<Value> {
     type Error = String;
 
     fn try_from(json: JSON) -> Result<Self, Self::Error> {
@@ -190,8 +194,8 @@ impl TryFrom<JSON> for ShelfContent {
     }
 }
 
-impl From<ShelfContent> for JSON {
-    fn from(content: ShelfContent) -> Self {
+impl From<ShelfContent<Value>> for JSON {
+    fn from(content: Self) -> Self {
         match content {
             ShelfContent::Value(a) => a.into(),
             ShelfContent::ShelfMap(shelf_map) => {
@@ -238,16 +242,16 @@ impl StateVector {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
-pub struct Shelf {
-    pub content: Option<ShelfContent>,
+#[derive(Serialize, Deserialize, PartialEq)]
+pub struct Shelf<T: Serialize + DeserializeOwned + PartialEq> {
+    pub content: Option<ShelfContent<T>>,
     pub clock: usize,
 }
 
-impl Shelf {
+impl<T: Serialize + DeserializeOwned + PartialEq> Shelf<T> {
 
     /// Creates a new shelf around the value with a clock value of 0
-    pub fn new(content: ShelfContent) -> Self {
+    pub fn new(content: ShelfContent<T>) -> Self {
         return Shelf {
             content: Some(content),
             clock: 0,
@@ -262,21 +266,21 @@ impl Shelf {
         }
     }
     ///  Gets a Value out of the Shelf
-    pub fn get(&self, key: &str) -> Option<&Shelf> {
+    pub fn get(&self, key: &str) -> Option<&Self> {
         match self.content.as_ref()? {
             ShelfContent::ShelfMap(shelf_map) => shelf_map.get(key),
             _ => None,
         }
     }
 
-    pub fn get_mut(&mut self, key: &str) -> Option<&mut Shelf> {
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Self> {
         match self.content.as_mut()? {
             ShelfContent::ShelfMap(shelf_map) => shelf_map.get_mut(key),
             _ => None,
         }
     }
 
-    pub fn set(&mut self, key: String, value:ShelfContent) -> Option<Shelf> {
+    pub fn set(&mut self, key: String, value: ShelfContent<T>) -> Option<Self> {
         let mut new_shelf = Shelf {
             content: Some(value),
             clock: self.clock
@@ -292,7 +296,7 @@ impl Shelf {
         }
     }
 
-    pub fn set_content(&mut self, val: ShelfContent) {
+    pub fn set_content(&mut self, val: ShelfContent<T>) {
         self.content.replace(val);
         self.clock +=1; // TODO: This should probably be a dirty flag.
 
@@ -342,20 +346,20 @@ impl Shelf {
 
 }
 
-impl Display for Shelf {
+impl<T: Display> Display for Shelf<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let content = self.content.as_ref().map(|v| format!("{v}")).unwrap_or("null".to_string());
         write!(f, "[{}, {}]", content, self.clock)
     }
 }
 
-impl Debug for Shelf {
+impl<T:Debug> Debug for Shelf<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return std::fmt::Display::fmt(&self, f)
     }
 }
 
-impl Default for Shelf {
+impl<T> Default for Shelf<T> {
     fn default() -> Self {
         Shelf {
             content: None,
@@ -364,7 +368,7 @@ impl Default for Shelf {
     }
 }
 
-impl TryFrom<JSON> for Shelf {
+impl TryFrom<JSON> for Shelf<Value> {
     type Error = String;
 
     fn try_from(value: JSON) -> Result<Self, Self::Error> {
@@ -394,8 +398,8 @@ impl TryFrom<JSON> for Shelf {
     }
 }
 
-impl From<Shelf> for JSON {
-    fn from(shelf: Shelf) -> Self {
+impl From<Shelf<Value>> for JSON {
+    fn from(shelf: Shelf<Value>) -> Self {
         if let Some(content) = shelf.content {
             let val = ShelfContent::from(content);
             json!([val, shelf.clock])
@@ -405,7 +409,7 @@ impl From<Shelf> for JSON {
     }
 }
 
-impl Mergeable<Self> for Shelf {
+impl<T: PartialEq> Mergeable<Self> for Shelf<T> {
     /// Merges another shelf into the current one, returning the resulting union.
     fn merge(&mut self, mut other: Self) {
         let this_content = self.content.take();
@@ -454,8 +458,8 @@ impl Mergeable<Self> for Shelf {
     }
 }
 
-impl DeltaCRDT for Shelf {
-    type Delta = Shelf;
+impl<T> DeltaCRDT for Shelf<T> {
+    type Delta = Shelf<T>;
     type StateVector = StateVector;
     fn get_state_vector(&self) -> StateVector {
         let children = self.content.as_ref().and_then(|content| match content {
@@ -514,17 +518,17 @@ mod tests {
 
     use crate::{shelf_fuzzer::ShelfFuzzer, wrap_crdt::*};
 
-    fn val(a: Value) -> Option<ShelfContent> {
+    fn val(a: Value) -> Option<ShelfContent<Value>> {
         Some(ShelfContent::Value(a))
     }
-    fn merge(branch: Shelf, mut main: Shelf) -> Shelf {
+    fn merge(branch: Shelf<Value>, mut main: Shelf<Value>) -> Shelf<Value> {
         let sv = main.get_state_vector();
         let delta = branch.get_state_delta(&sv).unwrap();
         main.merge(delta);
         main
     }
 
-    fn array(elements: Vec<isize>) -> Option<ShelfContent> {
+    fn array(elements: Vec<isize>) -> Option<ShelfContent<Value>> {
         val(Value::Array(
             elements.into_iter().map(|el| Value::Int(el)).collect(),
         ))
