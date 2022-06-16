@@ -105,7 +105,7 @@ impl From<Value> for JSON {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub enum ShelfContent<T: PartialOrd + Clone> {
     Value(T),
     ShelfMap(HashMap<String, Shelf<T>>),
@@ -158,14 +158,6 @@ impl<T: Display + PartialOrd + Clone> Debug for ShelfContent<T> {
     }
 }
 
-impl<T: PartialOrd + Clone> PartialEq for ShelfContent<T> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Value(l0), Self::Value(r0)) => l0 == r0,
-            _ => false,
-        }
-    }
-}
 
 impl<T: PartialOrd + Clone> PartialOrd for ShelfContent<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -244,7 +236,7 @@ impl StateVector {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct Shelf<T: PartialOrd + Clone> {
     pub content: Option<ShelfContent<T>>,
     pub clock: usize,
@@ -325,6 +317,27 @@ impl<T: Clone + PartialOrd> Shelf<T> {
 
     
 
+    
+
+}
+
+// SERDE Stuff
+impl<T: PartialOrd + Clone + Serialize + DeserializeOwned> Shelf<T> {
+    pub fn encode_state_vector(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+        bincode::serialize(&self.get_state_vector())
+    }
+
+    pub fn encode_state_delta(&self, sv_bytes: &[u8]) -> Option<Result<Vec<u8>, Box<bincode::ErrorKind>>> {
+        match bincode::deserialize(sv_bytes) {
+            Ok(sv) => {
+                self.get_state_delta(&sv).map(|delta| bincode::serialize(&delta))
+            },
+            Err(err) => {
+                Some(Err(err))
+            }
+        }
+        
+    }
 }
 
 
@@ -723,7 +736,7 @@ mod tests {
         }, 0]  }, 0])
         .try_into()
         .unwrap();
-        let res: Option<ShelfContent> = (|| {
+        let res: Option<ShelfContent<Value>> = (|| {
             shelf
                 .get_mut("user")?
                 .get_mut("cursor")?

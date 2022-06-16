@@ -14,8 +14,10 @@ use serde_json;
 use serde_json::Value as JSON;
 use shelf_crdt::shelf_fuzzer::ShelfFuzzer;
 use shelf_crdt::traits::{DeltaCRDT, Mergeable};
-use shelf_crdt::wrap_crdt::{Shelf as ShelfCRDT, ShelfContent};
+use shelf_crdt::wrap_crdt::{Shelf as GeneralShelfCRDT, ShelfContent, Value};
 use wasm_bindgen::prelude::*;
+
+type ShelfCRDT = GeneralShelfCRDT<Value>;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -338,19 +340,22 @@ impl Shelf {
 
     #[wasm_bindgen(js_name = "encodeStateVector")]
     pub fn encode_state_vector(&self) -> Vec<u8> {
-        self.0.encode_state_vector()
+        self.0.encode_state_vector().unwrap_throw()
     }
 
     #[wasm_bindgen(js_name = "encodeStateDelta")]
     pub fn encode_state_delta(&self, sv: Uint8Array) -> JsValue {
-        self.0
-            .encode_state_delta(&sv.to_vec())
-            .map(|v| Uint8Array::from(&v[..]).into())
-            .unwrap_or(JsValue::null())
+        let sv_bytes = self.0.encode_state_delta(&sv.to_vec());
+
+        match sv_bytes {
+            Some(Ok(bytes)) => Uint8Array::from(&bytes[..]).into(),
+            Some(Err(err)) => Err(err).unwrap_throw(),
+            None => JsValue::null(),
+        }
     }
     #[wasm_bindgen]
     pub fn merge(&mut self, delta_bytes: Uint8Array) {
-        let delta: ShelfCRDT = bincode::deserialize(&delta_bytes.to_vec()[..]).unwrap();
+        let delta: ShelfCRDT = bincode::deserialize(&delta_bytes.to_vec()[..]).unwrap_throw();
         self.0.merge(delta);
     }
 
