@@ -1,3 +1,6 @@
-# Thesis
+# ShelfAware
 
-Experiments related to my Master's Thesis at Cal Poly SLO.
+Implementation and experiments for the ShelfAware CRDT:
+
+- [ShelfAware Implementation](shelf-crdt/src/wrap_crdt.rs)
+- [benchmarks](benchmarks/index.js)
