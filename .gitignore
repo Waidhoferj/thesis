@@ -6,4 +6,3 @@ package-lock.json
 node_modules
 .travis.yml
 .appveyor.yml
-benchmarks/benchmark

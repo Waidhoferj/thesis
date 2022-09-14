@@ -1,0 +1,33 @@
+{
+  "name": "B1: Test N additions",
+  "date": "2022-06-16T01:17:56.833Z",
+  "version": "1.0.0",
+  "results": [
+    {
+      "name": "ShelfCRDT",
+      "ops": 17580,
+      "margin": 0.14,
+      "percentSlower": 0
+    },
+    {
+      "name": "Yjs Awareness CRDT",
+      "ops": 4156,
+      "margin": 0.15,
+      "percentSlower": 76.36
+    },
+    {
+      "name": "Automerge",
+      "ops": 57,
+      "margin": 13.79,
+      "percentSlower": 99.68
+    }
+  ],
+  "fastest": {
+    "name": "ShelfCRDT",
+    "index": 0
+  },
+  "slowest": {
+    "name": "Automerge",
+    "index": 2
+  }
+}

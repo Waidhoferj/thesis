@@ -1,0 +1,33 @@
+{
+  "name": "B2: Test Merge",
+  "date": "2022-06-16T01:18:13.412Z",
+  "version": "1.0.0",
+  "results": [
+    {
+      "name": "ShelfCRDT",
+      "ops": 21365,
+      "margin": 0.58,
+      "percentSlower": 0
+    },
+    {
+      "name": "Yjs Awareness CRDT",
+      "ops": 13330,
+      "margin": 0.28,
+      "percentSlower": 37.61
+    },
+    {
+      "name": "Automerge",
+      "ops": 16197,
+      "margin": 0.56,
+      "percentSlower": 24.19
+    }
+  ],
+  "fastest": {
+    "name": "ShelfCRDT",
+    "index": 0
+  },
+  "slowest": {
+    "name": "Yjs Awareness CRDT",
+    "index": 1
+  }
+}
