@@ -138,7 +138,7 @@ impl Awareness {
     #[wasm_bindgen(method, setter)]
     pub fn set_state(&mut self, val: &JsValue) {
         let json = val.into_serde().unwrap();
-        let shelf = ShelfCRDT::from_json_values(json).unwrap();
+        let shelf = ShelfCRDT::from_json_values(json, 0).unwrap();
         self.users.get_mut(&self.uid).unwrap().replace(shelf);
     }
 

@@ -108,7 +108,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
     fn test_intersection() {
         let h1 = RandomState::new();
         let h2 = RandomState::new();
