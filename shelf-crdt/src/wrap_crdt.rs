@@ -1,7 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value as JSON};
-
+use rand::{self, Rng};
 use crate::traits::{DeltaCRDT, Mergeable};
 
 use std::cmp::Ordering;
@@ -262,7 +262,7 @@ impl PartialOrd for ShelfClock {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self.clock.cmp(&other.clock) {
             order @ (Ordering::Greater | Ordering::Less)  => Some(order),
-            Ordering::Equal if self.client_id == other.client_id =>  Some(Ordering::Equal),
+            Ordering::Equal if self.client_id == other.client_id =>  Some(Ordering::Equal), // Ordering by client id is besides the point of shelf, but should we try it?
             _ => None
 
         }
@@ -485,9 +485,7 @@ impl TryFrom<JSON> for Shelf<Value> {
                     content: Some(val.try_into()?),
                     clock,
                 };
-                println!("B: {shelf}");
                 shelf.prune();
-                println!("A: {shelf}");
 
                 Ok(shelf)
             }
@@ -543,10 +541,10 @@ impl<T: PartialOrd + Clone> Mergeable<Self> for Shelf<T> {
                     self.clock = other.clock;
                 }
             } // If there is no priority between maps, they should be merged recursively.
-            (this_content,_, Some(Ordering::Equal)) => self.content = this_content, // Non-map clocks are only truly equal if the values are the same. Do nothing.
+            (this_content,_, Some(Ordering::Equal)) => self.content = this_content, // Ruling out recursive map merges ^, if clocks are the same, then the value is unchanged.
             (Some(this_val), Some(other_val), None) => 
             {
-                // Try partial comparison of content and default to client_ids if this fails.
+                // Try partial comparison of content and default to client_ids if this fails. Type compare will fail for things like floats that equal NaN.
                 let order = this_val.partial_cmp(&other_val);
                 let (val, clock) = match order {
                     Some(Ordering::Greater) => (this_val, self.clock),
@@ -628,7 +626,7 @@ impl<T: PartialOrd + Clone> DeltaCRDT for Shelf<T> {
                             Some((k.to_owned(), delta?))
                         })
                         .collect();
-                    let has_elements = !updated_shelf_map.is_empty(); // Even if empty, it is an update if clocks don't match
+                    let has_elements = !updated_shelf_map.is_empty(); // Even if empty, it is an update if clocks don't match.
                     has_elements.then(|| Shelf {
                         content: Some(ShelfContent::ShelfMap(updated_shelf_map)),
                         clock: self.clock,
@@ -640,6 +638,49 @@ impl<T: PartialOrd + Clone> DeltaCRDT for Shelf<T> {
         }
     }
 }
+
+
+struct Awareness<T: PartialOrd + Clone> {
+    shelf: Shelf<T>,
+    client_id: usize
+}
+
+impl <T: PartialOrd + Clone> Awareness<T> {
+    fn new() -> Self {
+        let client_id = rand::thread_rng().gen();
+        Awareness { shelf: Shelf { content: None, clock: ShelfClock { clock: 0, client_id} }, client_id }
+    }
+
+    fn get(&self, key: &str) -> Option<&Shelf<T>> {
+        self.shelf.get(key)
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut Shelf<T>> {
+        self.shelf.get_mut(key)
+    }
+
+    fn set(&mut self, key: String, value: ShelfContent<T>) -> Option<Shelf<T>> {
+        self.shelf.set(key, value, self.client_id)
+    }
+
+    fn set_content(&mut self, value: ShelfContent<T>) {
+        self.shelf.set_content( value, self.client_id)
+    }
+}
+
+impl Awareness<Value> {
+    fn from_values(values: JSON) -> Result<Self, String> {
+        let client_id = rand::thread_rng().gen();
+        let shelf = Shelf::from_json_values(values, client_id)?;
+        Ok(Awareness { shelf, client_id })
+    }
+
+    
+
+
+
+}
+
 
 
 
@@ -670,6 +711,43 @@ mod tests {
 
     fn clock(c: usize) -> ShelfClock {
         ShelfClock { client_id: 0, clock: c }
+    }
+
+    fn validate_crdt_properties<T: PartialEq + PartialOrd + Clone + Display>(shelf: Shelf<T>, shelf2: Shelf<T>) -> Shelf<T> {
+        // Forwards
+        let mut receiver = shelf.clone();
+        let sender = shelf2.clone();
+        let sv = receiver.get_state_vector();
+
+        
+        let delta = sender.get_state_delta(&sv);
+        let cached_delta = delta.clone();
+        if let Some(delta) = delta {
+            receiver.merge(delta);
+        }
+
+        // Backwards
+        let mut receiver_back = shelf2.clone();
+        let sender_back = shelf.clone();
+        let sv_back = receiver_back.get_state_vector();
+        let delta_back = sender_back.get_state_delta(&sv_back);
+        let cached_delta_back = delta_back.clone();
+        if let Some(delta) = delta_back {
+            receiver_back.merge(delta);
+        }
+        let id_delta = cached_delta.clone();
+        let report = || {
+            format!("\nReceiver: {shelf}, \nSender {shelf2}, \nStateVector {sv:?}, \nDelta: {id_delta:?} \nStateVectorBACK: {sv_back:?}, \nDeltaBACK {cached_delta_back:?}")
+        };
+        
+
+        // Ensure both forwards and backwards match
+        assert_eq!(receiver, receiver_back, "Not commutative {}", report());
+        if let Some(delta) = cached_delta {
+            receiver.merge(delta);
+            assert_eq!(receiver, receiver_back, "Not idempotent {}", report());
+        }
+        return receiver
     }
 
     #[test]
@@ -955,11 +1033,58 @@ mod tests {
     }
 
     #[test]
+    /// Test setting an empty object over a full object and ensure propagation of erasure.
+    fn test_empty_replacement() {
+        let shelf_map_with_value = Shelf {
+            content: Some(ShelfContent::Value(1)),
+            clock: ShelfClock::new(0)
+        };
+
+        let empty_shelf_map: Shelf<isize> = Shelf {
+            content: Some(ShelfContent::ShelfMap(HashMap::new())),
+            clock: ShelfClock::new(1)
+        };
+
+        let shelf_with_value: Shelf<isize> = Shelf {
+            content: Some(ShelfContent::ShelfMap(HashMap::new())),
+            clock: ShelfClock::new(2)
+        };
+
+        let shelves = vec![shelf_with_value, empty_shelf_map, shelf_map_with_value];
+        // test all combinations
+        for i in 0..shelves.len() {
+            for j in (i+1)..shelves.len() {
+                let shelf1 = shelves[i].clone();
+                let mut shelf2 = shelves[j].clone();
+                shelf2.clock = shelf2.clock.increment(1);
+
+                let res = validate_crdt_properties(shelf2, shelf1);
+                println!("{res}");
+            }
+        }
+        
+    }
+
+    #[test]
+    /// Ensure that deep maps with no values are not propagated
+    fn test_maps_without_value() {
+        let inner: Shelf<isize> = Shelf {
+            content: None,
+            clock: ShelfClock::new(1)
+        };
+
+        let mut outer: Shelf<isize> = Shelf::new(ShelfContent::ShelfMap(HashMap::new()), 1);
+
+        outer.set("test", inner, client_id)
+
+    }
+
+    #[test]
     /// Procedurally generates sets shelves and ensures that they all converge.
     fn test_generated_shelves() {
         let mut fuzzer = ShelfFuzzer {
-            rng: StdRng::seed_from_u64(0xdeadbeef),
-            depth_range: 1..3,
+            rng: StdRng::seed_from_u64(1),
+            depth_range: 1..4,
             branch_range: 1..5,
             value_range: 0..20,
         };

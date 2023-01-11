@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use js_sys::{self, Array, JsString, Uint8Array};
 use rand::prelude::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use serde_json;
 use serde_json::Value as JSON;
 use shelf_crdt::shelf_fuzzer::ShelfFuzzer;
@@ -99,18 +99,17 @@ impl Fuzzer {
 
 #[wasm_bindgen]
 pub struct Awareness {
-    uid: String,
-    users: HashMap<String, Rc<RefCell<ShelfCRDT>>>,
+    uid: usize,
+    users: HashMap<usize, ShelfCRDT>,
 }
 
 #[wasm_bindgen]
 impl Awareness {
     #[wasm_bindgen(constructor)]
-    pub fn new(uid: Option<String>) -> Self {
-        let uid = uid.unwrap_or_else(|| "temp".to_string()); // TODO: Random gen
+    pub fn new(uid: Option<usize>) -> Self {
+        let uid = uid.unwrap_or_else(|| rand::thread_rng().gen()); // TODO: Random gen
         let mut users = HashMap::new();
-        let user_state = Rc::new(RefCell::new(ShelfCRDT::default()));
-        users.insert(uid.clone(), user_state);
+        users.insert(uid.clone(), ShelfCRDT::default());
 
         Awareness { uid, users }
     }
@@ -119,14 +118,19 @@ impl Awareness {
     pub fn get_users(&self) -> js_sys::Object {
         let object = js_sys::Object::new();
         for (user, shelf) in self.users.iter() {
-            let shelf_view = ShelfView::new(Rc::clone(shelf));
-            js_sys::Reflect::set(&object, &JsValue::from(user), &JsValue::from(shelf_view))
-                .unwrap();
+            let values = shelf.to_json_values();
+            js_sys::Reflect::set(&object, &JsValue::from(user), &JsValue::from(values)).unwrap();
         }
         return object;
     }
+    // awareness.getUser(0).get("foo", "bar")
+    // awareness.getUser(0).get("foo", "bar")
+    // awareness.getUser(0).set(["foo", "bar"], 2)
+    // awareness.getUser(0).foo.bar
+    // awareness.user(0).get("foo", "bar").value
+    // awareness.user(0).set("foo", "bar").value = 7
     #[wasm_bindgen(js_name = "getUser")]
-    pub fn get_user(&self, uid: &str) -> Option<ShelfView> {
+    pub fn get_user(&self, uid: usize) -> Option<ShelfView> {
         self.users
             .get(uid)
             .map(|shelf| ShelfView::new(Rc::clone(shelf)))
@@ -388,3 +392,12 @@ impl Shelf {
 pub fn main() {
     console_error_panic_hook::set_once();
 }
+
+/*
+Task: set a value 100 keys deep
+ShelfView:
+    100 str conversions + 100 rc clone + 100! path copies
+Direct get/set:
+    100 str conversions
+
+*/
