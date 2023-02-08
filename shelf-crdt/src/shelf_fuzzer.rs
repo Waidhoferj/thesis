@@ -1,9 +1,12 @@
-use crate::wrap_crdt::Value;
 use rand::{self, prelude::SliceRandom, rngs::StdRng, Rng, SeedableRng};
 use serde_json::{self, json, Map, Number, Value as JSON};
 use std::ops::Range;
 
-const words: &'static [&'static str] = &[
+// TODO: Make the fuzzer generic over clocks and values
+// - Use the distribution trait in rand
+//    - Downside, you can't fix values or apply constraints generically
+
+const WORDS: &'static [&'static str] = &[
     "Excepteur",
     "aliqua",
     "ullamco",
@@ -95,8 +98,8 @@ impl ShelfFuzzer {
         return self.generate_children(1, true, client_id);
     }
 
-    pub fn generate_json_values(&mut self, client_id: usize) -> JSON {
-        self.generate_children(1, false, client_id)
+    pub fn generate_json_values(&mut self) -> JSON {
+        self.generate_children(1, false, 0) // Clock value not used
     }
 
     pub fn set_seed(&mut self, seed: u64) {
@@ -120,7 +123,7 @@ impl ShelfFuzzer {
         let values = (0..num_values).map(|_| {
             let mut value = self.sample_value_recursive(depth);
             if include_clocks {
-                value = self.wrap_in_clock(value, depth, client_id)
+                value = self.wrap_in_value_clock(value, depth, client_id)
             }
             (self.random_string(), value)
         });
@@ -128,12 +131,12 @@ impl ShelfFuzzer {
 
         let children = JSON::Object(children);
         if include_clocks {
-            self.wrap_in_clock(children, depth, client_id)
+            self.wrap_in_map_clock(children, depth)
         } else {
             children
         }
     }
-    fn wrap_in_clock(&mut self, value: JSON, depth: usize, client_id: usize) -> JSON {
+    fn wrap_in_value_clock(&mut self, value: JSON, depth: usize, client_id: usize) -> JSON {
         let clock = self
             .rng
             .gen_range((depth.checked_sub(2).unwrap_or(0))..(depth + 2)) as u16;
@@ -141,8 +144,16 @@ impl ShelfFuzzer {
         json!([value, [client_id, clock]])
     }
 
+    fn wrap_in_map_clock(&mut self, value: JSON, depth: usize) -> JSON {
+        let clock = self
+            .rng
+            .gen_range((depth.checked_sub(2).unwrap_or(0))..(depth + 2)) as u16;
+
+        json!([value, clock])
+    }
+
     fn random_string(&mut self) -> String {
-        words.choose(&mut self.rng).unwrap().to_string()
+        WORDS.choose(&mut self.rng).unwrap().to_string()
     }
 
     fn sample_value(&mut self) -> JSON {

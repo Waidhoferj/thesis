@@ -12,12 +12,14 @@ use rand::prelude::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json;
 use serde_json::Value as JSON;
+use shelf_crdt::clock::LamportTimestamp;
+use shelf_crdt::json::Value;
 use shelf_crdt::shelf_fuzzer::ShelfFuzzer;
 use shelf_crdt::traits::{DeltaCRDT, Mergeable};
-use shelf_crdt::wrap_crdt::{Shelf as GeneralShelfCRDT, ShelfContent, Value};
+use shelf_crdt::wrap_crdt::Shelf as GeneralShelfCRDT;
 use wasm_bindgen::prelude::*;
 
-type ShelfCRDT = GeneralShelfCRDT<Value>;
+type ShelfCRDT = GeneralShelfCRDT<Value, LamportTimestamp>;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
