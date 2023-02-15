@@ -1,17 +1,39 @@
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::{self, Value as JSON};
 
 use std::clone::Clone;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 
-#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
+use crate::traits::ClockGenerator;
+
+// Gets the logical clock component of the clock
+pub trait LogicalClock {
+    fn get_logical_clock(&self) -> usize;
+}
+
+#[derive(PartialEq, PartialOrd, Eq, Ord, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct LamportTimestamp(pub usize);
 
 impl LamportTimestamp {
     pub fn increment(self) -> Self {
         LamportTimestamp(self.0 + 1)
+    }
+}
+
+impl LogicalClock for LamportTimestamp {
+    fn get_logical_clock(&self) -> usize {
+        self.0
+    }
+}
+
+impl Default for LamportTimestamp {
+    fn default() -> Self {
+        Self(0)
     }
 }
 
@@ -27,12 +49,10 @@ impl From<usize> for LamportTimestamp {
     }
 }
 
-impl TryFrom<LamportTimestamp> for JSON {
-    type Error = ();
-
-    fn try_from(value: LamportTimestamp) -> Result<Self, Self::Error> {
+impl From<LamportTimestamp> for JSON {
+    fn from(value: LamportTimestamp) -> Self {
         let LamportTimestamp(clock) = value;
-        Ok(JSON::Number(clock.into()))
+        JSON::Number(clock.into())
     }
 }
 
@@ -50,38 +70,58 @@ impl TryFrom<JSON> for LamportTimestamp {
     }
 }
 
+pub struct LamportTimestampGenerator;
+
+impl ClockGenerator for LamportTimestampGenerator {
+    type Clock = LamportTimestamp;
+    fn new_clock(&mut self) -> Self::Clock {
+        LamportTimestamp(0)
+    }
+
+    fn next_clock(&mut self, clock: Self::Clock) -> Self::Clock {
+        let LamportTimestamp(clock) = clock;
+        LamportTimestamp(clock + 1)
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct ClientClock {
+pub struct DotClock {
     pub client_id: usize,
     pub clock: usize,
 }
 
-impl ClientClock {
+impl DotClock {
     pub fn new(client_id: usize) -> Self {
-        ClientClock {
+        DotClock {
             client_id,
             clock: 0,
         }
     }
 
     pub fn increment(&self, client_id: usize) -> Self {
-        ClientClock {
+        DotClock {
             client_id,
             clock: self.clock + 1,
         }
     }
 }
 
-impl Default for ClientClock {
+impl LogicalClock for DotClock {
+    fn get_logical_clock(&self) -> usize {
+        self.clock
+    }
+}
+
+impl Default for DotClock {
     fn default() -> Self {
-        ClientClock {
+        DotClock {
             client_id: 0,
             clock: 0,
         }
     }
 }
 
-impl PartialOrd for ClientClock {
+impl PartialOrd for DotClock {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self.clock.cmp(&other.clock) {
             order @ (Ordering::Greater | Ordering::Less) => Some(order),
@@ -91,20 +131,20 @@ impl PartialOrd for ClientClock {
     }
 }
 
-impl PartialEq<LamportTimestamp> for ClientClock {
+impl PartialEq<LamportTimestamp> for DotClock {
     fn eq(&self, _: &LamportTimestamp) -> bool {
         false
     }
 }
 
-impl PartialEq<ClientClock> for LamportTimestamp {
-    fn eq(&self, _: &ClientClock) -> bool {
+impl PartialEq<DotClock> for LamportTimestamp {
+    fn eq(&self, _: &DotClock) -> bool {
         false
     }
 }
 
-impl PartialOrd<ClientClock> for LamportTimestamp {
-    fn partial_cmp(&self, other: &ClientClock) -> Option<Ordering> {
+impl PartialOrd<DotClock> for LamportTimestamp {
+    fn partial_cmp(&self, other: &DotClock) -> Option<Ordering> {
         match self.0.partial_cmp(&other.clock) {
             Some(Ordering::Equal) => None,
             v => v,
@@ -112,7 +152,7 @@ impl PartialOrd<ClientClock> for LamportTimestamp {
     }
 }
 
-impl PartialOrd<LamportTimestamp> for ClientClock {
+impl PartialOrd<LamportTimestamp> for DotClock {
     fn partial_cmp(&self, other: &LamportTimestamp) -> Option<Ordering> {
         match self.clock.partial_cmp(&other.0) {
             Some(Ordering::Equal) => None,
@@ -121,13 +161,13 @@ impl PartialOrd<LamportTimestamp> for ClientClock {
     }
 }
 
-impl Display for ClientClock {
+impl Display for DotClock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{}, {}]", self.client_id, self.clock)
     }
 }
 
-impl TryFrom<JSON> for ClientClock {
+impl TryFrom<JSON> for DotClock {
     type Error = String;
 
     fn try_from(value: JSON) -> Result<Self, Self::Error> {
@@ -143,7 +183,7 @@ impl TryFrom<JSON> for ClientClock {
                             .as_u64()
                             .ok_or(format!("Could not parse clock from {clock}"))?
                             as usize;
-                        Ok(ClientClock { client_id, clock })
+                        Ok(DotClock { client_id, clock })
                     }
                     v => Err(format!("Could not parse ShelfClock from {v:?}")),
                 }
@@ -153,9 +193,160 @@ impl TryFrom<JSON> for ClientClock {
     }
 }
 
+impl From<DotClock> for JSON {
+    fn from(value: DotClock) -> Self {
+        let DotClock { client_id, clock } = value;
+        json!([client_id, clock])
+    }
+}
+
+pub struct DotClockGenerator {
+    client_id: usize,
+}
+
+impl DotClockGenerator {
+    pub fn new(client_id: usize) -> Self {
+        DotClockGenerator { client_id }
+    }
+}
+
+impl ClockGenerator for DotClockGenerator {
+    type Clock = DotClock;
+    fn new_clock(&mut self) -> Self::Clock {
+        DotClock {
+            client_id: self.client_id,
+            clock: 0,
+        }
+    }
+
+    fn next_clock(&mut self, clock: Self::Clock) -> Self::Clock {
+        let DotClock { clock, .. } = clock;
+        DotClock {
+            client_id: self.client_id,
+            clock,
+        }
+    }
+}
+
+// NOTE: Fields are public for testing purposes, these should not be public in a deployed system.
+#[derive(PartialEq, PartialOrd, Eq, Ord, Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SecureClock {
+    pub clock: usize,
+    pub hash: u64,
+}
+
+impl SecureClock {
+    pub fn new<T: Hash>(value: &T, clock: usize) -> Self {
+        let mut hasher = DefaultHasher::new(); // TODO use a different hasher
+        let pair = (clock, value);
+        pair.hash(&mut hasher);
+        let hash = hasher.finish();
+        Self { clock, hash }
+    }
+
+    pub fn verify(&self, value: impl Hash) -> bool {
+        let mut hasher = DefaultHasher::new(); // TODO use a different hasher
+        let pair = (self.clock, value);
+        pair.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.hash == hash
+    }
+
+    pub fn next(&self, value: impl Hash) -> Self {
+        Self::new(&value, self.clock + 1)
+    }
+}
+
+impl LogicalClock for SecureClock {
+    fn get_logical_clock(&self) -> usize {
+        self.clock
+    }
+}
+
+impl From<SecureClock> for JSON {
+    fn from(value: SecureClock) -> Self {
+        let SecureClock { hash, clock } = value;
+        json!([hash, clock])
+    }
+}
+
+impl TryFrom<JSON> for SecureClock {
+    type Error = String;
+
+    fn try_from(value: JSON) -> Result<Self, Self::Error> {
+        match value {
+            JSON::Array(mut array) if array.len() == 2 => {
+                match (array.remove(0), array.remove(0)) {
+                    (JSON::Number(hash), JSON::Number(clock)) => {
+                        let hash = hash
+                            .as_u64()
+                            .ok_or(format!("Could not parse hash from {hash}"))?;
+                        let clock = clock
+                            .as_u64()
+                            .ok_or(format!("Could not parse clock from {clock}"))?
+                            as usize;
+                        Ok(SecureClock { hash, clock })
+                    }
+                    v => Err(format!("Could not parse ShelfClock from {v:?}")),
+                }
+            }
+            v => Err(format!("Could not extract ShelfClock from {v:?}")),
+        }
+    }
+}
+
+impl PartialEq<LamportTimestamp> for SecureClock {
+    fn eq(&self, _: &LamportTimestamp) -> bool {
+        false
+    }
+}
+
+impl PartialEq<SecureClock> for LamportTimestamp {
+    fn eq(&self, _: &SecureClock) -> bool {
+        false
+    }
+}
+
+impl PartialOrd<SecureClock> for LamportTimestamp {
+    fn partial_cmp(&self, other: &SecureClock) -> Option<Ordering> {
+        match self.0.partial_cmp(&other.clock) {
+            Some(Ordering::Equal) => None,
+            v => v,
+        }
+    }
+}
+
+impl PartialOrd<LamportTimestamp> for SecureClock {
+    fn partial_cmp(&self, other: &LamportTimestamp) -> Option<Ordering> {
+        match self.clock.partial_cmp(&other.0) {
+            Some(Ordering::Equal) => None,
+            v => v,
+        }
+    }
+}
+
+impl Display for SecureClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{:x}, {}]", self.hash, self.clock)
+    }
+}
+
 pub enum ShelfClock<'a, M, V> {
     MapClock(&'a M),
     ValueClock(&'a V),
+}
+
+impl<'a, M, V> LogicalClock for ShelfClock<'a, M, V>
+where
+    M: LogicalClock,
+    V: LogicalClock,
+{
+    fn get_logical_clock(&self) -> usize {
+        match &self {
+            ShelfClock::MapClock(m) => m.get_logical_clock(),
+            ShelfClock::ValueClock(v) => v.get_logical_clock(),
+        }
+    }
 }
 
 impl<'a, M, V> PartialEq for ShelfClock<'a, M, V>

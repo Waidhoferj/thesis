@@ -1,14 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::clock::ShelfClock;
-use crate::json::Value;
-use crate::traits::Mergeable;
+use crate::clock::{ShelfClock};
 use crate::wrap_crdt::Shelf;
 use std::clone::Clone;
 use std::cmp::Ordering;
 use std::{collections::HashMap, fmt::Debug};
 
-use crate::traits::{DeltaCRDT, UpdateStrategy};
+use crate::traits::{DeltaCRDT};
 
 #[derive(PartialEq, Eq, Serialize, Deserialize, Clone)]
 pub enum StateVector<NodeClock: PartialEq + PartialOrd, LeafClock: PartialEq + PartialOrd> {
@@ -133,26 +131,19 @@ where
     }
 }
 
-struct StateVectorUpdateStrategy;
-
-// impl UpdateStrategy for StateVectorUpdateStrategy {
-//     type Target = ;
-//     type Update;
-//     fn get_update(target: Self::Target);
-//     fn process_update(target: Self::Target, update: Self::Update);
-// }
+pub struct StateVectorContext;
 
 #[cfg(test)]
 mod test {
     use serde_json::json;
 
-    use crate::clock::{ClientClock, LamportTimestamp};
+    use crate::clock::{DotClock, LamportTimestamp};
 
     use super::*;
-    type TestShelf = Shelf<Value, LamportTimestamp, ClientClock>;
+    type TestShelf = Shelf<Value, LamportTimestamp, DotClock>;
 
-    fn clock(c: usize) -> ClientClock {
-        ClientClock {
+    fn clock(c: usize) -> DotClock {
+        DotClock {
             client_id: 0,
             clock: c,
         }
@@ -172,10 +163,10 @@ mod test {
         let state_vector = shelf.get_state_vector();
         match state_vector {
             StateVector::Node(map, c) => {
-                assert_eq!(c, clock(0));
+                assert_eq!(c, LamportTimestamp(0));
                 match &map["user"] {
                     StateVector::Node(map, c) => {
-                        assert_eq!(*c, clock(0));
+                        assert_eq!(*c, LamportTimestamp(0));
                         match &map["mouse_position"] {
                             StateVector::Node(_, _) => panic!("Array should not be a node"),
                             StateVector::Leaf(i) => assert_eq!(*i, clock(0)),
@@ -183,7 +174,7 @@ mod test {
 
                         match &map["cursor"] {
                             StateVector::Node(map, c) => {
-                                assert_eq!(*c, clock(0));
+                                assert_eq!(*c, LamportTimestamp(0));
                                 if let StateVector::Leaf(i) = &map["left"] {
                                     assert_eq!(i, &clock(0));
                                 } else {
@@ -210,13 +201,13 @@ mod test {
         let shelf1: TestShelf = json!([{
             "user1": [{
                 "username": ["waidhoferj", [0,0]]
-            }, [0,0]]
-        }, [0,0]])
+            }, 0]
+        }, 0])
         .try_into()
         .unwrap();
         // number ,string, List*, Map<string, Shelf>
         let mut shelf2: TestShelf =
-            json!([{ "user2": [{"username": ["jwaidhof", [1,0]]}, [1,0]] }, [1,0]])
+            json!([{ "user2": [{"username": ["jwaidhof", [1,0]]}, 0] }, 0])
                 .try_into()
                 .unwrap();
         let state_vec = shelf2.get_state_vector();
@@ -227,9 +218,9 @@ mod test {
         let expected: TestShelf = json!([{
             "user1": [{
                 "username": ["waidhoferj",[0,0]]
-            }, [0,0]],
-            "user2": [{"username": ["jwaidhof",[1,0]]}, [1,0]]
-        }, [1,0]])
+            }, 0],
+            "user2": [{"username": ["jwaidhof",[1,0]]}, 0]
+        }, 0])
         .try_into()
         .unwrap();
         assert_eq!(shelf2, expected);

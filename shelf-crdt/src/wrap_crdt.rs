@@ -1,15 +1,19 @@
-use crate::traits::{ClockGenerator, Mergeable, UpdateStrategy};
+use crate::traits::{ClockGenerator, Mergeable};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value as JSON};
 
-use crate::clock::ShelfClock;
+use crate::clock::{
+    LamportTimestamp, LamportTimestampGenerator, LogicalClock, SecureClock, ShelfClock,
+};
 use crate::json::Value;
+use crate::state_vector::StateVectorContext;
 use std::clone::Clone;
 use std::cmp::Ordering;
+use std::collections::hash_map::{DefaultHasher, Entry};
 use std::fmt::Display;
+use std::hash::Hash;
+use std::mem::swap;
 use std::{collections::HashMap, fmt::Debug};
-use uuid;
-
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub enum Shelf<T, MapClock, ValueClock = MapClock>
 where
@@ -32,25 +36,30 @@ where
     MapClock: PartialEq + PartialOrd + PartialOrd<ValueClock> + PartialEq<ValueClock>,
     ValueClock: PartialEq + PartialOrd + PartialOrd<MapClock> + PartialEq<MapClock>,
 {
-    pub fn from_json_values<'a, CG>(json: JSON, context: &mut CG) -> Result<Self, String>
+    pub fn from_json_values<'a, MGen, VGen>(
+        json: JSON,
+        map_context: &mut MGen,
+        value_context: &mut VGen,
+    ) -> Result<Self, String>
     where
-        CG: ClockGenerator<MapClock> + ClockGenerator<ValueClock>,
+        MGen: ClockGenerator<Clock = MapClock>,
+        VGen: ClockGenerator<Clock = ValueClock>,
     {
         match json {
             JSON::Object(obj) => {
                 let mut shelves: HashMap<String, Shelf<Value, MapClock, ValueClock>> =
                     HashMap::new();
                 for (k, v) in obj {
-                    shelves.insert(k, Shelf::from_json_values(v, context)?);
+                    shelves.insert(k, Shelf::from_json_values(v, map_context, value_context)?);
                 }
                 Ok(Shelf::Map {
                     shelves,
-                    clock: context.new_clock(),
+                    clock: map_context.new_clock(),
                 })
             }
             val => Ok(Shelf::Value {
                 value: val.try_into()?,
-                clock: context.new_clock(),
+                clock: value_context.new_clock(),
             }),
         }
     }
@@ -190,7 +199,7 @@ where
                 }
 
                 let (value, clock) = (array.remove(0), array.remove(0));
-                let mut shelf = match value {
+                let shelf = match value {
                     JSON::Object(obj) => {
                         let mut shelves: HashMap<String, Shelf<Value, MapClock, ValueClock>> =
                             HashMap::new();
@@ -247,7 +256,6 @@ where
     MapClock: PartialEq + PartialOrd + PartialOrd<ValueClock> + PartialEq<ValueClock>,
     ValueClock: PartialEq + PartialOrd + PartialOrd<MapClock> + PartialEq<MapClock>,
 {
-    /// Compares clock values
     pub fn get_clock(&self) -> ShelfClock<MapClock, ValueClock> {
         match &self {
             Shelf::Value { clock, .. } => ShelfClock::ValueClock(clock),
@@ -270,31 +278,45 @@ where
         }
     }
 
+    pub fn get_path(&self, path: &[&str]) -> Result<&Self, String> {
+        let mut cur = self;
+        for key in path {
+            cur = cur.get(key).ok_or_else(|| format!("Key error: {key}"))?;
+        }
+        Ok(cur)
+    }
+
+    pub fn entry_from_path(
+        &mut self,
+        path: impl IntoIterator<Item = String>,
+    ) -> Result<(Entry<String, Self>, &MapClock), String> {
+        let mut path_iter = path.into_iter();
+        let mut update_shelf = self;
+        let mut prev_key: String = path_iter
+            .next()
+            .ok_or_else(|| "Path must have at least one key.".to_owned())?; // we are sure that at one key exists
+        for key in path_iter {
+            if let Some(shelf) = update_shelf.get_mut(&prev_key) {
+                update_shelf = shelf;
+                prev_key = key;
+            } else {
+                return Err(format!("Shelf Map does not exist at key '{key}'"));
+            }
+        }
+
+        match update_shelf {
+            Shelf::Value { .. } => Err(format!("Cannot set the key '{prev_key}' on a Shelf Value")),
+            Shelf::Map { shelves, clock } => Ok((shelves.entry(prev_key.to_owned()), clock)),
+        }
+    }
+
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Self> {
         match self {
             Self::Map { shelves, .. } => shelves.get_mut(key),
             _ => None,
         }
     }
-    // TODO: Implement update strategies
-    // pub fn set<Val: Into<Self>>(
-    //     &mut self,
-    //     key: String,
-    //     value: Val,
-    // ) -> Option<Self> {
-    //     let mut new_shelf: Self = value.into();
-    //     match &mut self.content {
-    //         Self::Map { shelves, clock } => {
-    //             if let Some(old_shelf) = shelves.get(&key) {
-    //                 // TODO: If the new value being set is a map, then take the max child id and increment it
-    //                 new_shelf.clock = old_shelf.clock.increment(client_id)
-    //             }
-    //             shelves.insert(key, new_shelf)
-    //         }
-    //         _ => None,
-    //     }
-    // }
-    /// Deletes any ShelfMap children with a lower clock value than the parent.
+
     pub fn prune(&mut self) {
         match self {
             Self::Map { shelves, clock } => {
@@ -320,30 +342,6 @@ where
         });
     }
 }
-
-// impl Shelf<Value> {
-//     pub fn from_json_values(values: JSON, client_id: usize) -> Result<Self, String> {
-//         let content = match values {
-//             JSON::Object(obj) => {
-//                 let mut children = HashMap::new();
-//                 for (key, value) in obj {
-//                     children.insert(key, Self::from_json_values(value, client_id)?);
-//                 }
-//                 ShelfContent::ShelfMap(children)
-//             }
-//             val => ShelfContent::Value(val.try_into()?),
-//         };
-
-//         Ok(Shelf {
-//             content,
-//             clock: ShelfClock::new(client_id),
-//         })
-//     }
-
-//     pub fn to_json_values(self) -> JSON {
-//         self.content.to_json_values()
-//     }
-// }
 
 /*
 Currently (x, 1) cmp (x,1) -> x must be in delta
@@ -409,88 +407,250 @@ where
     }
 }
 
-struct Awareness<T, MapClock, ValueClock, Updater>
+impl<T> Shelf<T, LamportTimestamp, SecureClock>
+where
+    T: PartialOrd + Hash + TryFrom<JSON, Error = String>,
+{
+    fn verify_contents(&self) -> bool {
+        match &self {
+            Shelf::Value { value, clock } => clock.verify(value),
+            Shelf::Map { shelves, .. } => shelves.iter().all(|(_, v)| v.verify_contents()),
+        }
+    }
+    /// Merges another shelf into the current one, returning the resulting union. If the other contents does not match the passed hash, it will keep the local value
+    pub fn secure_merge(self, other: Self) -> Self {
+        let clock_order = self.get_clock().partial_cmp(&other.get_clock());
+        match (self, other, clock_order) {
+            (this, other, Some(Ordering::Less)) => {
+                // only integrate if the contents is valid
+                if other.verify_contents() {
+                    other
+                } else {
+                    this
+                }
+            } // Update is greater so take on that value
+            (this, _, Some(Ordering::Greater)) => this, // Self is greater so keep value
+            (
+                Self::Map {
+                    shelves: mut these_shelves,
+                    clock: this_clock,
+                },
+                Self::Map {
+                    shelves: other_shelves,
+                    ..
+                },
+                _,
+            ) => {
+                for (key, val) in other_shelves.into_iter() {
+                    if let Some(sub_shelf) = these_shelves.remove(&key) {
+                        these_shelves.insert(key, sub_shelf.merge(val));
+                    } else if val.verify_contents() {
+                        these_shelves.insert(key, val);
+                    }
+                }
+
+                Self::Map {
+                    shelves: these_shelves,
+                    clock: this_clock, // Assumes clocks are equal because of previous two branches
+                }
+            } // If there is no priority between maps, they should be merged recursively.
+            (this, _, Some(Ordering::Equal)) => this, // Ruling out recursive map merges ^, if clocks are the same, then the value is unchanged.
+            (this, other, None) => {
+                // Try partial comparison of content and default to client_ids if this fails. Type compare will fail for things like floats that equal NaN.
+                match this.partial_cmp(&other) {
+                    Some(Ordering::Greater | Ordering::Equal) => this,
+                    Some(Ordering::Less) => {
+                        if other.verify_contents() {
+                            other
+                        } else {
+                            this
+                        }
+                    }
+                    None => panic!("Could not determine order of elements"),
+                }
+            } // In the case that both are different shelf content types, just take the type max.
+        }
+    }
+
+    pub fn secure_from_json_values(json: JSON) -> Result<Self, String> {
+        match json {
+            JSON::Object(obj) => {
+                let mut shelves: HashMap<String, Self> = HashMap::new();
+                for (k, v) in obj {
+                    shelves.insert(k, Shelf::secure_from_json_values(v)?);
+                }
+                Ok(Shelf::Map {
+                    shelves,
+                    clock: 0.into(),
+                })
+            }
+            json => {
+                let value: T = json.try_into()?;
+                let clock = SecureClock::new(&value, 0);
+                Ok(Shelf::Value { value, clock })
+            }
+        }
+    }
+}
+
+pub struct Awareness<T, MapClock, ValueClock, UpdateContext>
 where
     T: PartialOrd,
     MapClock: PartialEq + PartialOrd + PartialOrd<ValueClock> + PartialEq<ValueClock>,
     ValueClock: PartialEq + PartialOrd + PartialOrd<MapClock> + PartialEq<MapClock>,
-    Updater: UpdateStrategy<Target = Shelf<T, MapClock, ValueClock>>,
 {
-    clients: Shelf<T, MapClock, ValueClock>,
-    update_strategy: Updater,
-    client_id: String,
+    pub clients: Shelf<T, MapClock, ValueClock>,
+    pub update_context: UpdateContext,
+    pub client_id: usize,
 }
 
-impl<T, MapClock, ValueClock, Updater> Awareness<T, MapClock, ValueClock, Updater>
+impl<T, MapClock, ValueClock, UpdateContext> Awareness<T, MapClock, ValueClock, UpdateContext>
 where
-    T: PartialOrd,
+    T: PartialOrd + Debug,
     MapClock: PartialEq + PartialOrd + PartialOrd<ValueClock> + PartialEq<ValueClock> + Default,
     ValueClock: PartialEq + PartialOrd + PartialOrd<MapClock> + PartialEq<MapClock>,
-    Updater: UpdateStrategy<Target = Shelf<T, MapClock, ValueClock>>,
 {
-    fn new(update_strategy: Updater) -> Self {
-        let client_id = uuid::Uuid::new_v4().to_string();
+    pub fn new(update_context: UpdateContext) -> Self {
+        let client_id = rand::random();
         Awareness {
             clients: Shelf::Map {
                 shelves: HashMap::new(),
                 clock: MapClock::default(),
             },
             client_id,
-            update_strategy,
+            update_context,
         }
     }
 
-    fn get_peer_state(&self, key: &str) -> Option<&Shelf<T, MapClock, ValueClock>> {
+    pub fn new_for_client(client_id: usize, update_context: UpdateContext) -> Self {
+        Awareness {
+            clients: Shelf::Map {
+                shelves: HashMap::new(),
+                clock: MapClock::default(),
+            },
+            client_id,
+            update_context,
+        }
+    }
+
+    pub fn get_peer_state(&self, key: &str) -> Option<&Shelf<T, MapClock, ValueClock>> {
         self.clients.get(key)
     }
 
-    fn get_own_state_mut(&mut self) -> Option<&mut Shelf<T, MapClock, ValueClock>> {
-        self.clients.get_mut(&self.client_id)
+    pub fn get_own_state_mut(&mut self) -> Option<&mut Shelf<T, MapClock, ValueClock>> {
+        self.clients.get_mut(&self.client_id.to_string())
     }
 
-    fn set_state(
-        &mut self,
-        value: Shelf<T, MapClock, ValueClock>,
-    ) -> Option<Shelf<T, MapClock, ValueClock>> {
-        self.update_strategy
-            .set(&mut self.clients, self.client_id.to_owned(), value)
+    pub fn get_own_state(&self) -> Option<&Shelf<T, MapClock, ValueClock>> {
+        self.clients.get(&self.client_id.to_string())
+    }
+
+    pub fn iter_clients(&self) -> impl Iterator + '_ {
+        let iterator = match &self.clients {
+            Shelf::Value { .. } => unreachable!("Client mapping must be a Shelf Map."),
+            Shelf::Map { shelves, .. } => shelves.iter(),
+        };
+        iterator
     }
 }
 
-impl<MapClock, ValueClock, Updater> Awareness<Value, MapClock, ValueClock, Updater>
-where
-    MapClock: PartialEq + PartialOrd + PartialOrd<ValueClock> + PartialEq<ValueClock> + Default,
-    ValueClock: PartialEq + PartialOrd + PartialOrd<MapClock> + PartialEq<MapClock>,
-    Updater: UpdateStrategy<Target = Shelf<Value, MapClock, ValueClock>>
-        + Default
-        + ClockGenerator<MapClock>
-        + ClockGenerator<ValueClock>,
-{
-    fn from_values(values: JSON) -> Result<Self, String> {
-        let client_id = uuid::Uuid::new_v4().to_string();
-        let mut update_strategy = Updater::default();
-        let shelf: Shelf<Value, MapClock, ValueClock> =
-            Shelf::from_json_values(values, &mut update_strategy)?;
+impl Awareness<Value, LamportTimestamp, LamportTimestamp, StateVectorContext> {
+    pub fn set_state(
+        &mut self,
+        path: impl IntoIterator<Item = String>,
+        value: Shelf<Value, LamportTimestamp>,
+    ) -> Result<Option<Shelf<Value, LamportTimestamp>>, String> {
+        let (entry, parent_clock) = {
+            let client_id = self.client_id.to_string();
+            let pa = path.into_iter();
+            let p = std::iter::once(client_id).chain(pa);
+            self.clients.entry_from_path(p)
+        }?;
+        let parent_clock = parent_clock.0;
+        let new_ts = match &entry {
+            Entry::Occupied(occupied_entry) => {
+                let old_value = occupied_entry.get();
+                match old_value {
+                    Shelf::Value { clock, .. } => Some(clock.0.max(parent_clock) + 1), // New clock must be
+                    Shelf::Map {
+                        shelves,
+                        clock: LamportTimestamp(old_clock),
+                    } => {
+                        let highest_child_timestamp = shelves
+                            .iter()
+                            .map(|(_, shelf)| shelf.get_clock().get_logical_clock())
+                            .max();
+                        highest_child_timestamp.map(|ts| ts.max(parent_clock).max(*old_clock) + 1)
+                    }
+                }
+            }
+            Entry::Vacant(_) => None,
+        };
+        let new_ts = new_ts.unwrap_or(parent_clock + 1);
+        let value = match value {
+            Shelf::Value { value, .. } => Shelf::Value {
+                value,
+                clock: new_ts.into(),
+            },
+            Shelf::Map { shelves, .. } => Shelf::Map {
+                shelves,
+                clock: new_ts.into(),
+            },
+        };
+        let old_value = match entry {
+            Entry::Occupied(mut o) => Some(o.insert(value)),
+            Entry::Vacant(v) => {
+                v.insert(value);
+                None
+            }
+        };
+        Ok(old_value)
+    }
+
+    pub fn from_json_values(json: JSON, client_id: usize) -> Result<Self, String> {
+        let mut map_clock_generator = LamportTimestampGenerator {};
+        let mut val_clock_generator = LamportTimestampGenerator {};
+        let shelf: Shelf<Value, LamportTimestamp, LamportTimestamp> =
+            Shelf::from_json_values(json, &mut map_clock_generator, &mut val_clock_generator)?;
+        let mut client_map = HashMap::new();
+        client_map.insert(client_id.to_string(), shelf);
+        let clients = Shelf::Map {
+            shelves: client_map,
+            clock: LamportTimestamp::default(),
+        };
+
         Ok(Awareness {
-            clients: shelf,
             client_id,
-            update_strategy,
+            clients,
+            update_context: StateVectorContext,
         })
+    }
+
+    pub fn merge(&mut self, delta: Shelf<Value, LamportTimestamp>) {
+        let mut tmp: Shelf<Value, LamportTimestamp> = Shelf::Value {
+            value: 0.into(),
+            clock: 0.into(),
+        };
+        swap(&mut tmp, &mut self.clients);
+        let mut result = tmp.merge(delta);
+        swap(&mut result, &mut self.clients);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::clock::{ClientClock, LamportTimestamp};
+    use std::hash::Hasher;
+
+    use crate::clock::{DotClock, LamportTimestamp};
     use crate::traits::DeltaCRDT;
 
-    type TestShelf = Shelf<Value, LamportTimestamp, ClientClock>;
+    type TestShelf = Shelf<Value, LamportTimestamp, DotClock>;
 
     use rand::{prelude::StdRng, SeedableRng};
 
     use crate::{shelf_fuzzer::ShelfFuzzer, wrap_crdt::*};
 
-    fn merge(branch: TestShelf, mut main: TestShelf) -> TestShelf {
+    fn merge(branch: TestShelf, main: TestShelf) -> TestShelf {
         let sv = main.get_state_vector();
         if let Some(delta) = branch.get_state_delta(&sv) {
             return main.merge(delta);
@@ -524,8 +684,8 @@ mod tests {
         }
     }
 
-    fn clock(c: usize) -> ClientClock {
-        ClientClock {
+    fn clock(c: usize) -> DotClock {
+        DotClock {
             client_id: 0,
             clock: c,
         }
@@ -634,7 +794,7 @@ mod tests {
                 "b".to_owned(),
                 Shelf::Value {
                     value: 2.into(),
-                    clock: ClientClock {
+                    clock: DotClock {
                         client_id: 1,
                         clock: 0,
                     },
@@ -807,6 +967,62 @@ mod tests {
                 let res = validate_crdt_properties(shelf2, shelf1);
             }
         }
+    }
+
+    #[test]
+    fn test_secure_shelf() {
+        type SecureShelf = Shelf<Value, LamportTimestamp, SecureClock>;
+        // Verify basic merge
+        let first = SecureShelf::secure_from_json_values(json!({ "val1": "foo" })).unwrap();
+        let second = SecureShelf::secure_from_json_values(json!({ "val2": "bar" })).unwrap();
+        let together = first.merge(second);
+        let expected =
+            SecureShelf::secure_from_json_values(json!({ "val1": "foo", "val2": "bar" })).unwrap();
+        assert_eq!(together, expected);
+
+        // Verify that false elements aren't merged
+        let first = SecureShelf::secure_from_json_values(json!(1)).unwrap();
+        let second = SecureShelf::secure_from_json_values(json!(2)).unwrap();
+        assert_eq!(first.secure_merge(second.clone()), second.clone());
+        // Clocks don't match
+        let value: Value = 1.into();
+        let mut hasher = DefaultHasher::new(); // TODO use a different hasher
+        let pair = (1, value.clone());
+        pair.hash(&mut hasher);
+        let hash = hasher.finish();
+        let clock = SecureClock { clock: 2, hash };
+        let first = SecureShelf::Value { value, clock };
+        assert_eq!(second.clone().secure_merge(first), second.clone()); // FAILS
+
+        // Contents don't match
+        let value: Value = 1.into();
+        let mut hasher = DefaultHasher::new(); // TODO use a different hasher
+        let pair = (1, value.clone());
+        pair.hash(&mut hasher);
+        let hash = hasher.finish();
+        let clock = SecureClock { clock: 1, hash };
+        let first = SecureShelf::Value {
+            value: 5.into(),
+            clock,
+        };
+        assert_eq!(second.clone().secure_merge(first), second.clone());
+
+        // Recursive map verification. Don't merge map unless children are actually valid.
+        let first = SecureShelf::secure_from_json_values(json!({ "val1": "foo" })).unwrap();
+
+        let value: Value = 1.into();
+        let mut hasher = DefaultHasher::new(); // TODO use a different hasher
+        let pair = (1, value.clone());
+        pair.hash(&mut hasher);
+        let hash = hasher.finish();
+        let clock = SecureClock { clock: 2, hash };
+        let inner = SecureShelf::Value { value, clock };
+        let second = SecureShelf::Map {
+            shelves: HashMap::from_iter([("inner".to_owned(), inner)].into_iter()),
+            clock: 0.into(),
+        };
+        let result = first.clone().secure_merge(second);
+        assert_eq!(first, result)
     }
 
     #[test]

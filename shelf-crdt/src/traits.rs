@@ -34,8 +34,8 @@ pub trait DeltaCRDT {
 pub trait UpdateStrategy {
     type Target;
     type Update;
-    fn get_update(target: Self::Target);
-    fn process_update(target: Self::Target, update: Self::Update);
+    fn get_update(&self, target: Self::Target);
+    fn process_update(&self, target: Self::Target, update: Self::Update);
     fn set(
         &mut self,
         target: &mut Self::Target,
@@ -44,11 +44,9 @@ pub trait UpdateStrategy {
     ) -> Option<Self::Target>;
 }
 
-pub trait ClockGenerator<Clock>
-where
-    Clock: PartialEq + PartialOrd,
-{
-    fn new_clock(&mut self) -> Clock;
+pub trait ClockGenerator {
+    type Clock: PartialEq + PartialOrd;
+    fn new_clock(&mut self) -> Self::Clock;
 
-    fn next_clock(&mut self, clock: Clock) -> Clock;
+    fn next_clock(&mut self, clock: Self::Clock) -> Self::Clock;
 }

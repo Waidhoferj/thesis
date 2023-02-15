@@ -5,6 +5,7 @@ use std::clone::Clone;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::hash::Hash;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub enum Value {
@@ -98,6 +99,25 @@ impl From<Value> for JSON {
                 json!(arr)
             }
             Value::Null => JSON::Null,
+        }
+    }
+}
+
+impl Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match &self {
+            Value::String(s) => s.hash(state),
+            Value::Int(i) => i.hash(state),
+            Value::Float(f) => {
+                if f.is_nan() {
+                    panic!("Cannot hash a NaN value.")
+                } else {
+                    f.to_bits().hash(state)
+                }
+            }
+            Value::Bool(b) => b.hash(state),
+            Value::Array(a) => a.hash(state),
+            Value::Null => state.write_u64(0),
         }
     }
 }
