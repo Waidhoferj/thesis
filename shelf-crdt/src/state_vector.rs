@@ -137,10 +137,10 @@ pub struct StateVectorContext;
 mod test {
     use serde_json::json;
 
-    use crate::clock::{DotClock, LamportTimestamp};
+    use crate::{clock::{DotClock, LamportTimestamp}, traits::Mergeable};
 
     use super::*;
-    type TestShelf = Shelf<Value, LamportTimestamp, DotClock>;
+    type TestShelf = Shelf<crate::json::Value, LamportTimestamp, DotClock>;
 
     fn clock(c: usize) -> DotClock {
         DotClock {

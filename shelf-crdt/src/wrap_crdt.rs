@@ -235,6 +235,7 @@ where
         // Include clocks?
         match content {
             Shelf::Value { value, clock } => {
+                let value: JSON = value.into();
                 let clock: JSON = clock.into();
                 json!([value, clock])
             }
@@ -411,24 +412,27 @@ impl<T> Shelf<T, LamportTimestamp, SecureClock>
 where
     T: PartialOrd + Hash + TryFrom<JSON, Error = String>,
 {
-    fn verify_contents(&self) -> bool {
-        match &self {
-            Shelf::Value { value, clock } => clock.verify(value),
-            Shelf::Map { shelves, .. } => shelves.iter().all(|(_, v)| v.verify_contents()),
+    fn prune_corrupt_content(self) -> Option<Self> {
+        match self {
+            Shelf::Value { value, clock } if clock.verify(&value) => {
+                Some(Shelf::Value { value, clock })
+            }
+            Shelf::Map { shelves, clock } => {
+                let shelves: HashMap<String, Self> = shelves
+                    .into_iter()
+                    .filter_map(|(k, shelf)| shelf.prune_corrupt_content().map(|shelf| (k, shelf)))
+                    .collect();
+                let has_elements = !shelves.is_empty();
+                has_elements.then(|| Shelf::Map { shelves, clock })
+            }
+            _ => None,
         }
     }
     /// Merges another shelf into the current one, returning the resulting union. If the other contents does not match the passed hash, it will keep the local value
     pub fn secure_merge(self, other: Self) -> Self {
         let clock_order = self.get_clock().partial_cmp(&other.get_clock());
         match (self, other, clock_order) {
-            (this, other, Some(Ordering::Less)) => {
-                // only integrate if the contents is valid
-                if other.verify_contents() {
-                    other
-                } else {
-                    this
-                }
-            } // Update is greater so take on that value
+            (this, other, Some(Ordering::Less)) => other.prune_corrupt_content().unwrap_or(this), // Update is greater so take on that value
             (this, _, Some(Ordering::Greater)) => this, // Self is greater so keep value
             (
                 Self::Map {
@@ -444,7 +448,7 @@ where
                 for (key, val) in other_shelves.into_iter() {
                     if let Some(sub_shelf) = these_shelves.remove(&key) {
                         these_shelves.insert(key, sub_shelf.merge(val));
-                    } else if val.verify_contents() {
+                    } else if let Some(val) = val.prune_corrupt_content() {
                         these_shelves.insert(key, val);
                     }
                 }
@@ -459,13 +463,7 @@ where
                 // Try partial comparison of content and default to client_ids if this fails. Type compare will fail for things like floats that equal NaN.
                 match this.partial_cmp(&other) {
                     Some(Ordering::Greater | Ordering::Equal) => this,
-                    Some(Ordering::Less) => {
-                        if other.verify_contents() {
-                            other
-                        } else {
-                            this
-                        }
-                    }
+                    Some(Ordering::Less) => other.prune_corrupt_content().unwrap_or(this),
                     None => panic!("Could not determine order of elements"),
                 }
             } // In the case that both are different shelf content types, just take the type max.
@@ -1011,18 +1009,34 @@ mod tests {
         let first = SecureShelf::secure_from_json_values(json!({ "val1": "foo" })).unwrap();
 
         let value: Value = 1.into();
-        let mut hasher = DefaultHasher::new(); // TODO use a different hasher
+        let mut hasher = DefaultHasher::new();
         let pair = (1, value.clone());
         pair.hash(&mut hasher);
         let hash = hasher.finish();
         let clock = SecureClock { clock: 2, hash };
         let inner = SecureShelf::Value { value, clock };
+        let second_layer = SecureShelf::Map {
+            shelves: HashMap::from_iter([("inner_inner".to_owned(), inner)].into_iter()),
+            clock: 0.into(),
+        };
+        let valid = SecureShelf::secure_from_json_values(json!(1)).unwrap();
         let second = SecureShelf::Map {
-            shelves: HashMap::from_iter([("inner".to_owned(), inner)].into_iter()),
+            shelves: HashMap::from_iter(
+                [
+                    ("inner".to_owned(), second_layer),
+                    ("valid".to_owned(), valid.clone()),
+                ]
+                .into_iter(),
+            ),
             clock: 0.into(),
         };
         let result = first.clone().secure_merge(second);
-        assert_eq!(first, result)
+        let expected = SecureShelf::Map {
+            shelves: HashMap::from_iter([("valid".to_owned(), valid.clone())].into_iter()),
+            clock: 0.into(),
+        };
+        let expected = expected.merge(first);
+        assert_eq!(expected, result)
     }
 
     #[test]

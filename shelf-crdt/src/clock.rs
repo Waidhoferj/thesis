@@ -229,7 +229,7 @@ impl ClockGenerator for DotClockGenerator {
 }
 
 // NOTE: Fields are public for testing purposes, these should not be public in a deployed system.
-#[derive(PartialEq, PartialOrd, Eq, Ord, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SecureClock {
     pub clock: usize,
     pub hash: u64,
@@ -244,7 +244,7 @@ impl SecureClock {
         Self { clock, hash }
     }
 
-    pub fn verify(&self, value: impl Hash) -> bool {
+    pub fn verify(&self, value: &impl Hash) -> bool {
         let mut hasher = DefaultHasher::new(); // TODO use a different hasher
         let pair = (self.clock, value);
         pair.hash(&mut hasher);
@@ -252,8 +252,24 @@ impl SecureClock {
         self.hash == hash
     }
 
-    pub fn next(&self, value: impl Hash) -> Self {
+    pub fn next(&self, value: &impl Hash) -> Self {
         Self::new(&value, self.clock + 1)
+    }
+}
+
+impl PartialOrd for SecureClock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.clock.partial_cmp(&other.clock) {
+            Some(core::cmp::Ordering::Equal) => {
+                if self.hash == other.hash {
+                    Some(core::cmp::Ordering::Equal)
+                } else {
+                    None
+                }
+            }
+
+            ord => return ord,
+        }
     }
 }
 
@@ -375,5 +391,27 @@ where
             (ShelfClock::ValueClock(l), ShelfClock::MapClock(r)) => l.partial_cmp(r),
             (ShelfClock::ValueClock(l), ShelfClock::ValueClock(r)) => l.partial_cmp(r),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_secure_clock() {
+        // Basic equality
+        assert_eq!(SecureClock::new(&1, 5), SecureClock::new(&1, 5));
+
+        // Gt/lt clock
+        // Same val
+        assert!(SecureClock::new(&1, 6) > SecureClock::new(&1, 5));
+        assert!(SecureClock::new(&1, 5) < SecureClock::new(&1, 6));
+        // Different val
+        assert!(SecureClock::new(&2, 6) > SecureClock::new(&1, 5));
+        assert!(SecureClock::new(&2, 5) < SecureClock::new(&1, 6));
+
+        // Inequality with different content
+        assert_ne!(SecureClock::new(&2, 6), SecureClock::new(&1, 6));
     }
 }

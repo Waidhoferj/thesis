@@ -13,10 +13,12 @@ extern "C" {
 
 mod awareness;
 mod fuzzer;
+mod secure_shelf;
 mod shelf;
 mod utils;
 pub use awareness::Awareness;
 pub use fuzzer::Fuzzer;
+pub use secure_shelf::SecureShelf;
 pub use shelf::DotShelf;
 
 #[wasm_bindgen(start)]

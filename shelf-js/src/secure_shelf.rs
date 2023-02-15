@@ -1,8 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use shelf_crdt::clock::{
-    DotClock, DotClockGenerator, LamportTimestamp, LamportTimestampGenerator, LogicalClock,
-};
+use shelf_crdt::clock::{LamportTimestamp, LogicalClock, SecureClock};
 use shelf_crdt::state_vector::StateVector;
 use shelf_crdt::traits::{DeltaCRDT, Mergeable};
 
@@ -10,32 +8,27 @@ use js_sys::{self, Array, Uint8Array};
 use serde_json;
 use serde_json::Value as JSON;
 use shelf_crdt::json::Value;
-use shelf_crdt::wrap_crdt::Shelf as GeneralShelfCRDT;
 use wasm_bindgen::prelude::*;
 
-type ShelfCRDT = GeneralShelfCRDT<Value, LamportTimestamp, DotClock>;
+type SecureShelfCRDT = shelf_crdt::wrap_crdt::Shelf<Value, LamportTimestamp, SecureClock>;
 
 #[wasm_bindgen]
-pub struct DotShelf(ShelfCRDT);
+pub struct SecureShelf(SecureShelfCRDT);
 
 #[wasm_bindgen]
-impl DotShelf {
+impl SecureShelf {
     #[wasm_bindgen(constructor)]
-    pub fn new(content: JsValue, client_id: usize) -> Result<DotShelf, String> {
+    pub fn new(content: JsValue) -> Result<SecureShelf, String> {
         if content.is_undefined() {
             return Err("Content must be provided".to_owned());
         }
         let inner = {
             let json: JSON = content.into_serde().unwrap_throw();
-            ShelfCRDT::from_json_values(
-                json,
-                &mut LamportTimestampGenerator {},
-                &mut DotClockGenerator::new(client_id),
-            )
-            .unwrap_throw()
+            SecureShelfCRDT::secure_from_json_values(json).unwrap_throw()
         };
         Ok(Self(inner))
     }
+
     #[wasm_bindgen]
     pub fn get(&self, path: Array) -> JsValue {
         let mut shelf = &self.0;
@@ -53,8 +46,9 @@ impl DotShelf {
         let json = shelf.clone().to_json_values();
         JsValue::from_serde(&json).unwrap_throw()
     }
+
     #[wasm_bindgen]
-    pub fn set(&mut self, path: Array, contents: JsValue, client_id: usize) {
+    pub fn set(&mut self, path: Array, contents: JsValue) {
         let path = Self::convert_path(path).unwrap_throw();
         let (entry, parent_clock) = self.0.entry_from_path(path).unwrap_throw();
         let parent_clock = parent_clock.0;
@@ -62,8 +56,8 @@ impl DotShelf {
             Entry::Occupied(occupied_entry) => {
                 let old_value = occupied_entry.get();
                 match old_value {
-                    ShelfCRDT::Value { clock, .. } => Some(clock.clock.max(parent_clock) + 1), // New clock must be
-                    ShelfCRDT::Map {
+                    SecureShelfCRDT::Value { clock, .. } => Some(clock.clock.max(parent_clock) + 1), // New clock must be
+                    SecureShelfCRDT::Map {
                         shelves,
                         clock: LamportTimestamp(old_clock),
                     } => {
@@ -79,21 +73,13 @@ impl DotShelf {
         };
         let new_ts = new_ts.unwrap_or(parent_clock + 1);
         let json = contents.into_serde().unwrap_throw();
-        let contents = ShelfCRDT::from_json_values(
-            json,
-            &mut LamportTimestampGenerator {},
-            &mut DotClockGenerator::new(client_id),
-        )
-        .unwrap_throw();
+        let contents = SecureShelfCRDT::secure_from_json_values(json).unwrap_throw(); // TODO: Do we need to bound this by parent clock?
         let value = match contents {
-            ShelfCRDT::Value { value, .. } => ShelfCRDT::Value {
+            SecureShelfCRDT::Value { value, .. } => SecureShelfCRDT::Value {
+                clock: SecureClock::new(&value, new_ts),
                 value,
-                clock: DotClock {
-                    client_id,
-                    clock: new_ts,
-                },
             },
-            ShelfCRDT::Map { shelves, .. } => ShelfCRDT::Map {
+            SecureShelfCRDT::Map { shelves, .. } => SecureShelfCRDT::Map {
                 shelves,
                 clock: new_ts.into(),
             },
@@ -127,7 +113,7 @@ impl DotShelf {
 
     #[wasm_bindgen(js_name = "getStateDelta")]
     pub fn get_state_delta(&self, sv: Uint8Array) -> JsValue {
-        let decoded_sv: StateVector<LamportTimestamp, DotClock> =
+        let decoded_sv: StateVector<LamportTimestamp, SecureClock> =
             bincode::deserialize(&sv.to_vec()[..]).unwrap_throw();
         let bytes = self
             .0
@@ -141,8 +127,8 @@ impl DotShelf {
     }
     #[wasm_bindgen]
     pub fn merge(self, delta_bytes: Uint8Array) -> Self {
-        let delta: ShelfCRDT = bincode::deserialize(&delta_bytes.to_vec()[..]).unwrap_throw();
-        Self(self.0.merge(delta))
+        let delta: SecureShelfCRDT = bincode::deserialize(&delta_bytes.to_vec()[..]).unwrap_throw();
+        Self(self.0.secure_merge(delta))
     }
 
     /// Converts a JavaScript Array to a path of strings. Returns `None` on failure
@@ -152,8 +138,8 @@ impl DotShelf {
     }
 }
 
-impl From<ShelfCRDT> for DotShelf {
-    fn from(value: ShelfCRDT) -> Self {
+impl From<SecureShelfCRDT> for SecureShelf {
+    fn from(value: SecureShelfCRDT) -> Self {
         Self(value)
     }
 }
