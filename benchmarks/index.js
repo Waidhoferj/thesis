@@ -7,13 +7,18 @@ const sizeOf = sizeOfMod.default;
 
 let { Fuzzer } = shelf;
 import YjsAwarenessBench from "./contenders/yjs.js";
-import { ShelfBench, ShelfAwarenessBench } from "./contenders/shelf-aware.js";
+import {
+  ShelfBench,
+  ShelfAwarenessBench,
+  SecureShelfBench,
+} from "./contenders/shelf-aware.js";
 import AutomergeBench from "./contenders/automerge.js";
 
 const contenders = [
   new YjsAwarenessBench(),
   new ShelfBench(),
   new ShelfAwarenessBench(),
+  new SecureShelfBench(),
   new AutomergeBench(),
 ];
 

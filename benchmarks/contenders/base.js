@@ -2,7 +2,7 @@ export default class BenchmarkEnvironment {
   constructor() {
     this.name = "BASE";
     this.fuzzerConfig = {
-      seed: 1,
+      seed: 42,
       valueRange: [1000, 1000 + 1],
       depthRange: [0, 1],
       branchRange: [0, 5],
