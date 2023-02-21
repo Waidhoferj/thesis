@@ -1,76 +1,7 @@
-use rand::{self, prelude::SliceRandom, rngs::StdRng, Rng, SeedableRng};
+use rand::{self, prelude::SliceRandom, rngs::StdRng, seq::IteratorRandom, Rng, SeedableRng};
+use random_word;
 use serde_json::{self, json, Map, Number, Value as JSON};
-use std::ops::Range;
-
-// TODO: Make the fuzzer generic over clocks and values
-// - Use the distribution trait in rand
-//    - Downside, you can't fix values or apply constraints generically
-
-const WORDS: &'static [&'static str] = &[
-    "Excepteur",
-    "aliqua",
-    "ullamco",
-    "enim",
-    "culpa",
-    "sunt",
-    "ad",
-    "reprehenderit",
-    "magna",
-    "occaecat",
-    "consequat",
-    "pariatur",
-    "quis",
-    "esse",
-    "voluptate",
-    "anim",
-    "Lorem",
-    "non",
-    "sed",
-    "ea",
-    "aute",
-    "fugiat",
-    "Duis",
-    "exercitation",
-    "dolor",
-    "commodo",
-    "minim",
-    "veniam",
-    "et",
-    "consectetur",
-    "adipiscing",
-    "amet",
-    "dolore",
-    "officia",
-    "cupidatat",
-    "aliquip",
-    "ipsum",
-    "nisi",
-    "cillum",
-    "laborum",
-    "nostrud",
-    "irure",
-    "Ut",
-    "mollit",
-    "ex",
-    "qui",
-    "eu",
-    "ut",
-    "tempor",
-    "in",
-    "labore",
-    "velit",
-    "do",
-    "laboris",
-    "elit",
-    "id",
-    "proident",
-    "incididunt",
-    "sint",
-    "sit",
-    "est",
-    "deserunt",
-    "eiusmod",
-];
+use std::{collections::HashSet, ops::Range};
 
 pub struct ShelfFuzzer {
     pub rng: StdRng,
@@ -106,28 +37,38 @@ impl ShelfFuzzer {
         self.rng = StdRng::seed_from_u64(seed);
     }
 
+    fn gen_keys(&mut self, n_keys: usize) -> Vec<String> {
+        let mut keys = random_word::all()[..10000]
+            .iter()
+            .choose_multiple(&mut self.rng, n_keys);
+        keys.shuffle(&mut self.rng);
+        keys.into_iter().map(|s| s.to_string()).collect()
+    }
+
     fn generate_children(&mut self, depth: usize, include_clocks: bool, client_id: usize) -> JSON {
         let mut children: Map<String, JSON> = Map::new();
-
         if depth <= self.rng.gen_range(self.depth_range.clone()) {
             let num_branches = self.rng.gen_range(self.branch_range.clone());
-            let branches = (0..num_branches).map(|_| {
+            let keys = self.gen_keys(num_branches);
+            let branches = keys.into_iter().map(|key| {
                 (
-                    self.random_string(),
+                    key,
                     self.generate_children(depth + 1, include_clocks, client_id),
                 )
             });
             children.extend(branches);
-        };
-        let num_values = self.rng.gen_range(self.value_range.clone());
-        let values = (0..num_values).map(|_| {
-            let mut value = self.sample_value_recursive(depth);
-            if include_clocks {
-                value = self.wrap_in_value_clock(value, depth, client_id)
-            }
-            (self.random_string(), value)
-        });
-        children.extend(values);
+        } else {
+            let num_items = self.rng.gen_range(self.value_range.clone());
+            let keys = self.gen_keys(num_items);
+            let items = keys.into_iter().map(|key| {
+                let mut value = self.sample_value_recursive(depth);
+                if include_clocks {
+                    value = self.wrap_in_value_clock(value, depth, client_id)
+                }
+                (key, value)
+            });
+            children.extend(items);
+        }
 
         let children = JSON::Object(children);
         if include_clocks {
@@ -152,15 +93,11 @@ impl ShelfFuzzer {
         json!([value, clock])
     }
 
-    fn random_string(&mut self) -> String {
-        WORDS.choose(&mut self.rng).unwrap().to_string()
-    }
-
     fn sample_value(&mut self) -> JSON {
         let pick: usize = self.rng.gen_range(0..2);
 
         match pick {
-            0 => JSON::String(self.random_string()),
+            0 => JSON::String(random_word::gen().to_string()),
             1 => JSON::Number(Number::from_f64(self.rng.gen()).unwrap()),
             _ => JSON::Bool(self.rng.gen()),
         }
@@ -186,5 +123,68 @@ impl ShelfFuzzer {
             _ => self.sample_value(),
         };
         return value;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn has_difference(this: &Map<String, JSON>, other: &Map<String, JSON>) -> bool {
+        let this_keys: HashSet<&String> = this.keys().into_iter().collect();
+        let other_keys: HashSet<&String> = other.keys().into_iter().collect();
+        this_keys
+            .difference(&other_keys)
+            .into_iter()
+            .next()
+            .is_some()
+            || other_keys
+                .difference(&this_keys)
+                .into_iter()
+                .next()
+                .is_some()
+            || this_keys
+                .into_iter()
+                .any(|key| match (this.get(key), other.get(key)) {
+                    (Some(JSON::Object(m1)), Some(JSON::Object(m2))) => has_difference(m1, m2),
+                    _ => false,
+                })
+    }
+
+    #[test]
+    fn test_flat_json_generation() {
+        let mut fuzzer = ShelfFuzzer {
+            rng: StdRng::seed_from_u64(42),
+            depth_range: 0..1,
+            branch_range: 0..5,
+            value_range: 1000..1001,
+        };
+        for _ in 0..50 {
+            let json = fuzzer.generate_json_values();
+            let obj = json.as_object().unwrap();
+            assert_eq!(obj.len(), 1000);
+            assert!(obj.iter().all(|(_, v)| !v.is_object()))
+        }
+    }
+    #[test]
+    fn test_subset() {
+        let mut fuzzer = ShelfFuzzer {
+            rng: StdRng::seed_from_u64(42),
+            depth_range: 0..5,
+            branch_range: 0..4,
+            value_range: 1..2,
+        };
+
+        for _ in 0..50 {
+            let json1 = fuzzer.generate_json_values();
+            let json2 = fuzzer.generate_json_values();
+            let obj1 = json1.as_object().unwrap();
+            let obj2 = json2.as_object().unwrap();
+
+            if !has_difference(obj1, obj2) {
+                println!("oof")
+            }
+        }
     }
 }

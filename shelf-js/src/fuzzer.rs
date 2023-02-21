@@ -1,7 +1,5 @@
 use std::ops::Range;
 
-use wasm_bindgen::prelude::*;
-
 use js_sys::{self, Array, JsString, Uint8Array};
 use rand::prelude::StdRng;
 use rand::{Rng, SeedableRng};
@@ -10,6 +8,26 @@ use serde_json::Value as JSON;
 use shelf_crdt::clock::LamportTimestamp;
 use shelf_crdt::json::Value;
 use shelf_crdt::shelf_fuzzer::ShelfFuzzer;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    // Use `js_namespace` here to bind `console.log(..)` instead of just
+    // `log(..)`
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+// Next let's define a macro that's like `println!`, only it works for
+// `console.log`. Note that `println!` doesn't actually work on the wasm target
+// because the standard library currently just eats all output. To get
+// `println!`-like behavior in your app you'll likely want a macro like this.
+
+macro_rules! console_log {
+    // Note that this is using the `log` function imported above during
+    // `bare_bones`
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
+}
 
 #[wasm_bindgen]
 pub struct Fuzzer(ShelfFuzzer);
@@ -29,7 +47,8 @@ impl Fuzzer {
 
     #[wasm_bindgen(js_name = "generateContent")]
     pub fn generate_content(&mut self) -> Result<JsValue, JsValue> {
-        JsValue::from_serde(&self.0.generate_json_values())
+        let json = self.0.generate_json_values();
+        JsValue::from_serde(&json)
             .or_else(|_| Err(JsValue::from("Failed to convert shelf to JSON")))
     }
 
