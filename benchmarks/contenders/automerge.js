@@ -20,24 +20,24 @@ export default class AutomergeBench extends BenchmarkEnvironment {
     });
 
     let encodedState = getLastAutomergeChange(autoDoc);
-    sizes["Random Merge"] = encodedState.byteLength;
+    sizes["Random Merge Update"] = encodedState.byteLength;
 
     autoDoc = Automerge.change(autoDoc, "Single update", (doc) => {
       doc.contents.test = "delta";
     });
     encodedState = getLastAutomergeChange(autoDoc);
-    sizes["Single Change"] = encodedState.byteLength;
+    sizes["Single Change Update"] = encodedState.byteLength;
 
     // Complete Deletion
     autoDoc = Automerge.init();
     autoDoc = Automerge.change(autoDoc, "add elements", (doc) => {
       doc.contents = firstValues;
     });
-    autoDoc = Automerge.change(autoDoc, "add elements", (doc) => {
+    autoDoc = Automerge.change(autoDoc, "remove elements", (doc) => {
       doc.contents = {};
     });
     encodedState = getLastAutomergeChange(autoDoc);
-    sizes["Complete Deletion"] = encodedState.byteLength;
+    sizes["Complete Deletion Update"] = encodedState.byteLength;
 
     return sizes;
   }
@@ -65,12 +65,11 @@ export default class AutomergeBench extends BenchmarkEnvironment {
   }
 
   testNAdditions() {
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
-    let content = fuzzer.generateContent();
+    let fuzzer = new Fuzzer(this.config.nAdditions.fuzzerConfig);
     let insertElements = fuzzer.generateContent();
     let autoDoc = Automerge.init();
     autoDoc = Automerge.change(autoDoc, "Set initial state", (doc) => {
-      doc.contents = content;
+      doc.contents = { base: 1 };
     });
 
     return () => {
@@ -83,17 +82,16 @@ export default class AutomergeBench extends BenchmarkEnvironment {
   }
 
   testMerge() {
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
-    let first = fuzzer.generateContent();
-    let second = fuzzer.generateContent();
+    let smallFuzzer = new Fuzzer(this.config.merges.smallFuzzer);
+    let largeFuzzer = new Fuzzer(this.config.merges.largeFuzzer);
     let firstDoc = Automerge.init();
     let secondDoc = Automerge.init();
     firstDoc = Automerge.change(firstDoc, "", (doc) => {
-      doc.contents = first;
+      doc.contents = largeFuzzer.generateContent();
     });
 
     secondDoc = Automerge.change(secondDoc, "", (doc) => {
-      doc.contents = second;
+      doc.contents = smallFuzzer.generateContent();
     });
 
     return () => {

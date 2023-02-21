@@ -1,5 +1,5 @@
 /* benchmark.js */
-import * as b from "benny";
+// import * as b from "benny";
 import * as fs from "fs";
 import * as shelf from "shelf";
 import * as sizeOfMod from "object-sizeof";
@@ -8,18 +8,18 @@ const sizeOf = sizeOfMod.default;
 let { Fuzzer } = shelf;
 import YjsAwarenessBench from "./contenders/yjs.js";
 import {
-  ShelfBench,
+  DotShelfBench,
   ShelfAwarenessBench,
   SecureShelfBench,
 } from "./contenders/shelf-aware.js";
 import AutomergeBench from "./contenders/automerge.js";
 
 const contenders = [
+  new DotShelfBench(),
   new YjsAwarenessBench(),
-  new ShelfBench(),
+  new AutomergeBench(),
   new ShelfAwarenessBench(),
   new SecureShelfBench(),
-  new AutomergeBench(),
 ];
 
 // N additions
@@ -31,9 +31,13 @@ const contenders = [
 // Size of crdt metadata
 
 function testMemoryFootprint() {
+  console.log("Testing delta size...");
   testDeltaSize();
+  console.log("Testing deletion size...");
   testSizeAfterDeletion();
+  console.log("Testing crdt size...");
   testCRDTSize();
+  console.log("Finished Memory Footprint evaluation");
 }
 
 /**
@@ -43,7 +47,7 @@ function testMemoryFootprint() {
  * Key metric: Update size in bytes
  */
 function testDeltaSize() {
-  const N = 1000;
+  const N = 100;
   const fuzzer = new Fuzzer({
     seed: 1,
     valueRange: [100, 200],
@@ -73,7 +77,7 @@ function testDeltaSize() {
 }
 
 function testSizeAfterDeletion() {
-  const N = 1000;
+  const N = 100;
   const fuzzer = new Fuzzer({
     seed: 1,
     valueRange: [100, 200],
@@ -122,23 +126,8 @@ function testCRDTSize() {
 }
 
 function benchmark() {
-  b.suite(
-    "B1: Test N additions",
-    ...contenders.map((c) => b.add(c.name, c.testNAdditions.bind(c))),
-    b.cycle(),
-    b.complete(),
-    b.save({ file: "additions", version: "1.0.0" }),
-    b.save({ file: "additions", format: "chart.html" })
-  );
-
-  b.suite(
-    "B2: Test Merge",
-    ...contenders.map((c) => b.add(c.name, c.testMerge.bind(c))),
-    b.cycle(),
-    b.complete(),
-    b.save({ file: "merges", version: "1.0.0" }),
-    b.save({ file: "merges", format: "chart.html" })
-  );
+  benchmarkMerges();
+  benchmarkUpdates();
 }
 /**
  * Folds values from dictionary into a list by key
@@ -154,10 +143,92 @@ function keyWiseFold(acc, addition) {
   return acc;
 }
 
+class Benchmark {
+  constructor(contenders = [], config = {}) {
+    config = { name: "Benchmark", warmupRounds: 3, rounds: 7, ...config };
+    this.contenders = contenders;
+    this.name = config.name;
+    this.warmupRounds = config.warmupRounds;
+    this.rounds = config.rounds;
+  }
+
+  run() {
+    const times = Object.fromEntries(
+      this.contenders.map(({ name }) => [name, []])
+    );
+    for (let { name, code } of this.contenders) {
+      for (let i = 0; i < this.warmupRounds; i++) {
+        let func = code();
+        func();
+      }
+
+      for (let round = 0; round < this.rounds; round++) {
+        let func = code();
+        let start = performance.now();
+        func();
+        let end = performance.now();
+        times[name].push(end - start);
+      }
+    }
+    const averageTimes = Object.fromEntries(
+      Object.entries(times).map(([name, times]) => [
+        name,
+        times.reduce((sum, cur) => sum + cur, 0) / times.length,
+      ])
+    );
+    const opsPerSec = Object.fromEntries(
+      Object.entries(averageTimes).map(([name, time]) => [
+        name,
+        Math.pow(10, 6) / time,
+      ])
+    );
+    return opsPerSec;
+  }
+
+  summarize(results) {
+    let [fastest] = Object.entries(results).reduce(
+      ([bestName, fastestOps], [name, ops]) =>
+        ops > fastestOps ? [name, ops] : [bestName, fastestOps],
+      ["", -Infinity]
+    );
+    let [slowest] = Object.entries(results).reduce(
+      ([bestName, slowestOps], [name, ops]) =>
+        ops < slowestOps ? [name, ops] : [bestName, slowestOps],
+      ["", Infinity]
+    );
+
+    return { fastest, slowest };
+  }
+}
+
+function benchmarkMerges() {
+  let competitors = contenders.map((c) => ({
+    name: c.name,
+    code: c.testMerge.bind(c),
+  }));
+
+  let bench = new Benchmark(competitors, { name: "Merges" });
+  let results = bench.run();
+  console.log("Merges", bench.summarize(results), results);
+  fs.writeFileSync("benchmark/results/merges.json", JSON.stringify(results));
+}
+
+function benchmarkUpdates() {
+  let competitors = contenders.map((c) => ({
+    name: c.name,
+    code: c.testNAdditions.bind(c),
+  }));
+
+  let bench = new Benchmark(competitors, { name: "Updates" });
+  let results = bench.run();
+  console.log("Updates", bench.summarize(results), results);
+
+  fs.writeFileSync("benchmark/results/additions.json", JSON.stringify(results));
+}
+
 function generateReports() {
   benchmark();
   testMemoryFootprint();
-  console.log("Finished Memory Footprint evaluation");
 }
 
 function deepEq(ob1, ob2) {
@@ -165,3 +236,4 @@ function deepEq(ob1, ob2) {
 }
 
 generateReports();
+process.exit(0);

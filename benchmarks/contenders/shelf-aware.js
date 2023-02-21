@@ -5,28 +5,34 @@ const sizeOf = sizeOfMod.default;
 
 let { Fuzzer, Awareness: ShelfAwareness, DotShelf: Shelf, SecureShelf } = shelf;
 
-export class ShelfBench extends BenchmarkEnvironment {
+function shelfSizeOf(shelf) {
+  // We cannot measure the shelf with sizeOf directly because the data is stored in wasm. So we must use a convenience method.
+  return (
+    shelf.getTotalBytes() + // Size of parts stored in WASM
+    sizeOf(shelf) // Size of everything stored in JS
+  );
+}
+export class DotShelfBench extends BenchmarkEnvironment {
   constructor() {
     super();
-    this.name = "Shelf (ours)";
+    this.name = "DotShelf (ours)";
   }
 
   testDeltaSize(firstValues, secondValues) {
     const sizes = {};
-    const client_id = 1;
 
     const shelf1 = new Shelf(firstValues, 1);
     const shelf2 = new Shelf(secondValues, 2);
     let sv = shelf1.getStateVector();
     let delta = shelf2.getStateDelta(sv);
-    sizes["Random Merge"] = delta.byteLength;
+    sizes["Random Merge Update"] = delta.byteLength;
 
     // With only a single element changed
     const shelf1Updated = new Shelf(firstValues, 1);
     shelf1Updated.set(["test"], "delta");
     sv = shelf1.getStateVector();
     delta = shelf1Updated.getStateDelta(sv);
-    sizes["Single Change"] = delta.byteLength;
+    sizes["Single Change Update"] = delta.byteLength;
 
     // Complete deletion
     const deletionShelf = new Shelf({ contents: firstValues }, 1);
@@ -34,25 +40,28 @@ export class ShelfBench extends BenchmarkEnvironment {
     deletionShelf.set(["contents"], {}, 1);
     sv = deletionShelfCopy.getStateVector();
     delta = deletionShelf.getStateDelta(sv);
-    sizes["Complete Deletion"] = delta.byteLength;
+    sizes["Complete Deletion Update"] = delta.byteLength;
     return sizes;
   }
 
   testSizeAfterDeletion(values) {
     const deletionShelf = new Shelf({ contents: values }, 1);
     deletionShelf.set(["contents"], {}, 1);
-    return { "Complete Deletion": sizeOf(deletionShelf) };
+    return {
+      "Complete Deletion": shelfSizeOf(deletionShelf),
+    };
   }
 
   testCRDTSize(values) {
     const shelfCRDT = new Shelf(values);
-    return sizeOf(shelfCRDT);
+
+    return shelfSizeOf(shelfCRDT);
   }
 
   testNAdditions() {
     let crdt = new Shelf({ base: 1 }, 1);
 
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
+    let fuzzer = new Fuzzer(this.config.nAdditions.fuzzerConfig);
     let content = fuzzer.generateContent();
 
     return () => {
@@ -63,17 +72,16 @@ export class ShelfBench extends BenchmarkEnvironment {
   }
 
   testMerge() {
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
-    let first = new Shelf(fuzzer.generateContent(), 1);
-    let second = new Shelf(fuzzer.generateContent(), 2);
+    let smallFuzzer = new Fuzzer(this.config.merges.smallFuzzer);
+    let largeFuzzer = new Fuzzer(this.config.merges.largeFuzzer);
+    let first = new SecureShelf(smallFuzzer.generateContent());
+    let second = new SecureShelf(largeFuzzer.generateContent());
 
     return () => {
       let sv = first.getStateVector();
       let delta = second.getStateDelta(sv);
       if (delta) {
-        first = first.merge(delta);
-      } else {
-        throw Error("There should be a delta for the shelfCRDT");
+        first.merge(delta);
       }
     };
   }
@@ -92,14 +100,14 @@ export class ShelfAwarenessBench extends BenchmarkEnvironment {
     const shelf2 = new shelf.Awareness(secondValues, 2);
     let sv = shelf1.getStateVector();
     let delta = shelf2.getStateDelta(sv);
-    sizes["Random Merge"] = delta.byteLength;
+    sizes["Random Merge Update"] = delta.byteLength;
 
     // With only a single element changed
     const shelf1Updated = new shelf.Awareness(firstValues, 1);
     shelf1Updated.set(["test"], "delta");
     sv = shelf1.getStateVector();
     delta = shelf1Updated.getStateDelta(sv);
-    sizes["Single Change"] = delta.byteLength;
+    sizes["Single Change Update"] = delta.byteLength;
 
     // Complete deletion
     const deletionShelf = new shelf.Awareness({ contents: firstValues }, 1);
@@ -107,25 +115,25 @@ export class ShelfAwarenessBench extends BenchmarkEnvironment {
     deletionShelf.set(["contents"], {});
     sv = deletionShelfCopy.getStateVector();
     delta = deletionShelf.getStateDelta(sv);
-    sizes["Complete Deletion"] = delta.byteLength;
+    sizes["Complete Deletion Update"] = delta.byteLength;
     return sizes;
   }
 
   testSizeAfterDeletion(values) {
-    const deletionShelf = new Shelf({ contents: values }, 1);
-    deletionShelf.set(["contents"], {});
-    return { "Complete Deletion": sizeOf(deletionShelf) };
+    const awareness = new shelf.Awareness({ contents: values }, 1);
+    awareness.set(["contents"], {});
+    return { "Complete Deletion": shelfSizeOf(awareness) };
   }
 
   testCRDTSize(values) {
-    const shelfCRDT = new Shelf(values);
-    return sizeOf(shelfCRDT);
+    const awareness = new shelf.Awareness(values);
+    return shelfSizeOf(awareness); // TODO update
   }
 
   testNAdditions() {
-    let crdt = new Shelf({ base: 1 }, 1);
+    let crdt = new shelf.Awareness({ base: 1 }, 1);
 
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
+    let fuzzer = new Fuzzer(this.config.nAdditions.fuzzerConfig);
     let content = fuzzer.generateContent();
 
     return () => {
@@ -136,17 +144,16 @@ export class ShelfAwarenessBench extends BenchmarkEnvironment {
   }
 
   testMerge() {
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
-    let first = new Shelf(fuzzer.generateContent(), 1);
-    let second = new Shelf(fuzzer.generateContent(), 2);
+    let smallFuzzer = new Fuzzer(this.config.merges.smallFuzzer);
+    let largeFuzzer = new Fuzzer(this.config.merges.largeFuzzer);
+    let first = new shelf.Awareness(smallFuzzer.generateContent());
+    let second = new shelf.Awareness(largeFuzzer.generateContent());
 
     return () => {
       let sv = first.getStateVector();
       let delta = second.getStateDelta(sv);
       if (delta) {
         first = first.merge(delta);
-      } else {
-        throw Error("There should be a delta for the shelfCRDT");
       }
     };
   }
@@ -165,14 +172,14 @@ export class SecureShelfBench extends BenchmarkEnvironment {
     const shelf2 = new SecureShelf(secondValues);
     let sv = shelf1.getStateVector();
     let delta = shelf2.getStateDelta(sv);
-    sizes["Random Merge"] = delta.byteLength;
+    sizes["Random Merge Update"] = delta.byteLength;
 
     // With only a single element changed
     const shelf1Updated = new SecureShelf(firstValues);
     shelf1Updated.set(["test"], "delta");
     sv = shelf1.getStateVector();
     delta = shelf1Updated.getStateDelta(sv);
-    sizes["Single Change"] = delta.byteLength;
+    sizes["Single Change Update"] = delta.byteLength;
 
     // Complete deletion
     const deletionShelf = new SecureShelf({ contents: firstValues });
@@ -180,25 +187,25 @@ export class SecureShelfBench extends BenchmarkEnvironment {
     deletionShelf.set(["contents"], {});
     sv = deletionShelfCopy.getStateVector();
     delta = deletionShelf.getStateDelta(sv);
-    sizes["Complete Deletion"] = delta.byteLength;
+    sizes["Complete Deletion Update"] = delta.byteLength;
     return sizes;
   }
 
   testSizeAfterDeletion(values) {
     const deletionShelf = new SecureShelf({ contents: values });
     deletionShelf.set(["contents"], {});
-    return { "Complete Deletion": sizeOf(deletionShelf) };
+    return { "Complete Deletion": shelfSizeOf(deletionShelf) };
   }
 
   testCRDTSize(values) {
     const shelfCRDT = new SecureShelf(values);
-    return sizeOf(shelfCRDT);
+    return shelfSizeOf(shelfCRDT);
   }
 
   testNAdditions() {
     let crdt = new SecureShelf({ base: 1 });
 
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
+    let fuzzer = new Fuzzer(this.config.nAdditions.fuzzerConfig);
     let content = fuzzer.generateContent();
 
     return () => {
@@ -207,21 +214,18 @@ export class SecureShelfBench extends BenchmarkEnvironment {
       }
     };
   }
-  // TODO
+
   testMerge() {
-    let fuzzer = new Fuzzer(this.fuzzerConfig);
-    let first = new SecureShelf(fuzzer.generateContent());
-    let second = new SecureShelf(fuzzer.generateContent());
+    let smallFuzzer = new Fuzzer(this.config.merges.smallFuzzer);
+    let largeFuzzer = new Fuzzer(this.config.merges.largeFuzzer);
+    let first = new SecureShelf(smallFuzzer.generateContent());
+    let second = new SecureShelf(largeFuzzer.generateContent());
 
     return () => {
       let sv = first.getStateVector();
       let delta = second.getStateDelta(sv);
       if (delta) {
         first = first.merge(delta);
-      } else {
-        console.log("first:\n", JSON.stringify(first.toJson()));
-        console.log("\nsecond:\n", JSON.stringify(second.toJson()));
-        throw Error("There should be a delta for the shelfCRDT");
       }
     };
   }
