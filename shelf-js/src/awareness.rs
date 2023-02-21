@@ -110,6 +110,11 @@ impl Awareness {
         self.inner.merge(delta);
     }
 
+    #[wasm_bindgen(js_name = "getTotalBytes")]
+    pub fn get_total_bytes(&self) -> usize {
+        self.inner.get_total_bytes()
+    }
+
     /// Converts a JavaScript Array to a path of strings. Returns `None` on failure
     #[inline]
     fn convert_path(list: Array) -> Option<Vec<String>> {

@@ -342,6 +342,20 @@ where
             shelf.garbage_collect();
         });
     }
+    /// Convenience method for testing. Calculates the size of the shelf recursively using Rust's  std::mem::size_of.
+    /// Assumes that we are calculating the total size of the instantiated objects.
+    pub fn get_total_bytes(&self) -> usize {
+        match &self {
+            Shelf::Value { .. } => std::mem::size_of::<T>() + std::mem::size_of::<ValueClock>(),
+            Shelf::Map { shelves, clock } => {
+                shelves
+                    .iter()
+                    .map(|(k, s)| std::mem::size_of_val(k) + s.get_total_bytes())
+                    .sum::<usize>()
+                    + std::mem::size_of::<MapClock>()
+            }
+        }
+    }
 }
 
 /*
@@ -549,6 +563,12 @@ where
             Shelf::Map { shelves, .. } => shelves.iter(),
         };
         iterator
+    }
+
+    pub fn get_total_bytes(&self) -> usize {
+        return std::mem::size_of::<UpdateContext>()
+            + std::mem::size_of::<usize>()
+            + self.clients.get_total_bytes();
     }
 }
 
