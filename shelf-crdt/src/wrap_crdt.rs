@@ -338,7 +338,7 @@ where
             Self::Map { shelves, .. } => shelves,
             _ => return,
         };
-        shelf_map.iter_mut().for_each(|(_, shelf)| {
+        shelf_map.values_mut().for_each(|shelf| {
             shelf.garbage_collect();
         });
     }
@@ -424,7 +424,7 @@ where
 
 impl<T> Shelf<T, LamportTimestamp, SecureClock>
 where
-    T: PartialOrd + Hash + TryFrom<JSON, Error = String>,
+    T: PartialOrd + Hash,
 {
     fn prune_corrupt_content(self) -> Option<Self> {
         match self {
@@ -461,7 +461,7 @@ where
             ) => {
                 for (key, val) in other_shelves.into_iter() {
                     if let Some(sub_shelf) = these_shelves.remove(&key) {
-                        these_shelves.insert(key, sub_shelf.merge(val));
+                        these_shelves.insert(key, sub_shelf.secure_merge(val));
                     } else if let Some(val) = val.prune_corrupt_content() {
                         these_shelves.insert(key, val);
                     }
@@ -483,7 +483,9 @@ where
             } // In the case that both are different shelf content types, just take the type max.
         }
     }
+}
 
+impl Shelf<Value, LamportTimestamp, SecureClock> {
     pub fn secure_from_json_values(json: JSON) -> Result<Self, String> {
         match json {
             JSON::Object(obj) => {
@@ -497,7 +499,7 @@ where
                 })
             }
             json => {
-                let value: T = json.try_into()?;
+                let value: Value = json.try_into()?;
                 let clock = SecureClock::new(&value, 0);
                 Ok(Shelf::Value { value, clock })
             }
@@ -595,8 +597,8 @@ impl Awareness<Value, LamportTimestamp, LamportTimestamp, StateVectorContext> {
                         clock: LamportTimestamp(old_clock),
                     } => {
                         let highest_child_timestamp = shelves
-                            .iter()
-                            .map(|(_, shelf)| shelf.get_clock().get_logical_clock())
+                            .values()
+                            .map(|shelf| shelf.get_clock().get_logical_clock())
                             .max();
                         highest_child_timestamp.map(|ts| ts.max(parent_clock).max(*old_clock) + 1)
                     }
