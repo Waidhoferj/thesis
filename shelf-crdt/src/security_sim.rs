@@ -1,13 +1,20 @@
-use crate::clock::{LamportTimestamp, SecureClock};
+use crate::clock::{LamportTimestamp, LogicalClock, SecureClock};
+use crate::json::Value;
 use crate::state_vector::StateVector;
+use crate::traits::DeltaCRDT;
 use crate::wrap_crdt::Shelf;
+
+use rand::seq::{IteratorRandom, SliceRandom};
+use rand::{self, Rng};
+use random_word;
 use std::collections::HashMap;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{self, channel};
 use std::sync::mpsc::{Receiver, Sender};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 type SecureShelf = Shelf<usize, LamportTimestamp, SecureClock>;
+type SecureStateVector = StateVector<LamportTimestamp, SecureClock>;
 
 /*
    Interface:
@@ -28,23 +35,41 @@ type SecureShelf = Shelf<usize, LamportTimestamp, SecureClock>;
 
    Plan:
        1. Client
+    Valid Actions:
+        1. Check Inbox
+        2. Random shelf edit
+        3. Send updates
+    Byzantine actions:
+        1. Corrupt clock (inc by 1)
+        2. Corrupt value (randomly replace)
+
 
 */
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-enum Message {
-    StateVector(),
-    Delta(),
+enum Payload {
+    StateVector(SecureStateVector),
+    Delta(SecureShelf),
     Terminate, // Kill this client process
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Update {
-    message: Message,
+struct Message {
+    payload: Payload,
     from: String,
     timestamp: SystemTime,
+}
+
+impl Message {
+    pub fn new(from: String, payload: Payload) -> Self {
+        Self {
+            from,
+            payload,
+            timestamp: SystemTime::now(),
+        }
+    }
 }
 
 struct ClientConfig {
@@ -65,14 +90,15 @@ impl Default for ClientConfig {
 struct SimulationConfig {
     pub n_nodes: usize,
     pub p_byzantine: f64,
-    pub duration: usize,
+    pub duration: Duration,
 }
 
 struct Client {
+    uid: String,
     peers: HashMap<String, Sender<Message>>,
     inbox: Receiver<Message>,
-    actions: Vec<Action>,
-    client_config: ClientConfig,
+    actions: Vec<ClientAction>,
+    shelf: SecureShelf,
 }
 
 impl Client {
@@ -84,7 +110,9 @@ impl Client {
                 outboxes.push(tx);
                 (outboxes, inboxes)
             });
-        let clients: Vec<Self> = inboxes
+        let byzantine_split = config.p_byzantine * config.n_nodes as f64;
+        let byzantine_split = byzantine_split.floor() as usize;
+        let mut clients: Vec<Self> = inboxes
             .into_iter()
             .enumerate()
             .map(|(uid, inbox)| {
@@ -97,95 +125,407 @@ impl Client {
                         (peer_uid, address)
                     })
                     .collect();
-                Self::new(peers, inbox)
+                if uid < byzantine_split {
+                    Self::new_byzantine(uid.to_string(), inbox, peers)
+                } else {
+                    Self::new(uid.to_string(), inbox, peers)
+                }
             })
             .collect();
 
+        // Randomize order
+        clients.shuffle(&mut rand::thread_rng());
         clients
     }
 
-    fn new_byzantine(peers: HashMap<String, Sender<Message>>, inbox: Receiver<Message>) -> Self {
-        let client_config = ClientConfig::default();
-        let actions = [].into_iter().collect();
+    fn new_byzantine(
+        uid: String,
+        inbox: Receiver<Message>,
+        peers: HashMap<String, Sender<Message>>,
+    ) -> Self {
+        let mut rng = rand::thread_rng();
+        let actions = [
+            ClientAction::new(
+                Action::CheckInbox,
+                Duration::from_millis(rng.gen_range(1..20)),
+            ),
+            ClientAction::new(
+                Action::SendUpdate,
+                Duration::from_millis(rng.gen_range(1..20)),
+            ),
+            ClientAction::new(
+                Action::RandomEdit,
+                Duration::from_millis(rng.gen_range(5..10)),
+            ),
+            ClientAction::new(
+                Action::CorruptClock,
+                Duration::from_millis(rng.gen_range(5..10)),
+            ),
+            ClientAction::new(
+                Action::CorruptValue,
+                Duration::from_millis(rng.gen_range(5..10)),
+            ),
+        ];
+        Self::from_actions(uid, inbox, peers, actions)
+    }
+
+    fn new(uid: String, inbox: Receiver<Message>, peers: HashMap<String, Sender<Message>>) -> Self {
+        let mut rng = rand::thread_rng();
+        let actions = [
+            ClientAction::new(
+                Action::CheckInbox,
+                Duration::from_millis(rng.gen_range(1..20)),
+            ),
+            ClientAction::new(
+                Action::SendUpdate,
+                Duration::from_millis(rng.gen_range(1..20)),
+            ),
+            ClientAction::new(
+                Action::RandomEdit,
+                Duration::from_millis(rng.gen_range(5..10)),
+            ),
+            ClientAction::new(Action::CheckForCorruption, Duration::from_millis(0)),
+        ];
+        Self::from_actions(uid, inbox, peers, actions)
+    }
+
+    fn from_actions(
+        uid: String,
+        inbox: Receiver<Message>,
+        peers: HashMap<String, Sender<Message>>,
+        actions: impl IntoIterator<Item = ClientAction>,
+    ) -> Self {
         Self {
+            uid,
             peers,
             inbox,
-            client_config,
-            actions,
+            actions: actions.into_iter().collect(),
+            shelf: Shelf::Map {
+                shelves: HashMap::new(),
+                clock: 0.into(),
+            },
         }
     }
 
-    fn new(peers: HashMap<String, Sender<Message>>, inbox: Receiver<Message>) -> Self {
-        let client_config = ClientConfig::default();
-        Self {
-            peers,
-            inbox,
-            client_config,
-            actions: vec![],
-        }
-    }
-    fn run(mut self) {
-        thread::spawn(move || loop {
-            // Handle early quit
-            self.step()
-        });
-    }
-
-    fn step(&mut self) {
+    pub fn step(&mut self) -> Option<SecureShelf> {
         let actions = &mut self.actions;
-        let context: &mut ActionContext = self.as_mut();
-        actions.iter_mut().for_each(|action| action.act(context))
+        let mut context: ActionContext = ActionContext {
+            uid: self.uid.as_str(),
+            peers: &self.peers,
+            inbox: &mut self.inbox,
+            shelf: &mut self.shelf,
+        };
+        let follow_ups: Vec<Action> = actions
+            .iter_mut()
+            .filter(|action| action.should_run())
+            .filter_map(|action| action.act(&mut context))
+            .collect();
+        for action in follow_ups {
+            if let Action::Terminate = action {
+                return Some(self.shelf.clone());
+            }
+        }
+        None
+    }
+
+    pub fn is_byzantine(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|action| matches!(action.action, Action::CorruptClock | Action::CorruptValue))
     }
 }
 
-fn main() {}
+struct ClientAction {
+    interval: Duration,
+    last_performed: SystemTime,
+    action: Action,
+}
+
+impl ClientAction {
+    pub fn new(action: Action, interval: Duration) -> Self {
+        Self {
+            interval,
+            action,
+            last_performed: std::time::UNIX_EPOCH,
+        }
+    }
+    pub fn should_run(&self) -> bool {
+        SystemTime::now()
+            .duration_since(self.last_performed)
+            .map(|dur| dur > self.interval)
+            .unwrap_or(false)
+    }
+    pub fn act(&mut self, context: &mut ActionContext) -> Option<Action> {
+        let follow_up_action = self.action.act(context);
+        self.last_performed = SystemTime::now();
+        follow_up_action
+    }
+}
 
 enum Action {
-    CheckInbox(ClientActions::CheckInbox),
+    CheckInbox,
+    RandomEdit,
+    SendUpdate,
+    CorruptClock,
+    CorruptValue,
+    CheckForCorruption,
+    Terminate,
 }
 
 impl Action {
-    pub fn act(&mut self, context: &mut ActionContext) {
+    pub fn act(&mut self, context: &mut ActionContext) -> Option<Action> {
         match self {
-            Action::CheckInbox(a) => a.act(context),
+            Action::CheckInbox => return self.check_inbox(context),
+            Action::RandomEdit => {
+                self.random_edit(context);
+            }
+            Action::SendUpdate => {
+                self.send_update(context);
+            }
+            Action::CorruptClock => {
+                self.corrupt_clock(context);
+            }
+            Action::CorruptValue => {
+                self.corrupt_value(context);
+            }
+            Action::CheckForCorruption => {
+                self.check_corruption(context);
+            }
+            Action::Terminate => return Some(Action::Terminate),
+        }
+        None
+    }
+
+    fn check_inbox(&mut self, context: &mut ActionContext) -> Option<Action> {
+        loop {
+            let message = match context.inbox.recv_timeout(Duration::from_millis(5)) {
+                Ok(message) => message,
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(err) => panic!("{}", err),
+            };
+            let res = self.process_message(message, context);
+            if res.is_some() {
+                return res;
+            }
+        }
+        None
+    }
+
+    fn process_message(&mut self, message: Message, context: &mut ActionContext) -> Option<Action> {
+        match message.payload {
+            Payload::StateVector(sv) => {
+                if let Some(delta) = context.shelf.get_state_delta(&sv) {
+                    let outbox = context.peers.get(&message.from).unwrap();
+                    let payload = Payload::Delta(delta);
+                    let response = Message::new(context.uid.to_owned(), payload);
+                    let send_res = outbox.send(response);
+                }
+                None
+            }
+            Payload::Delta(delta) => {
+                let mut tmp = Shelf::Map {
+                    shelves: HashMap::new(),
+                    clock: 0.into(),
+                };
+                std::mem::swap(&mut tmp, context.shelf);
+                *context.shelf = tmp.secure_merge(delta);
+                None
+            }
+            Payload::Terminate => Some(Action::Terminate),
+        }
+    }
+    fn random_edit(&self, context: &mut ActionContext) {
+        let key = random_word::gen().to_owned();
+        let value: usize = rand::thread_rng().gen();
+        const SHELF_SIZE_LIMIT: usize = 200_000;
+        match context.shelf {
+            Shelf::Map {
+                shelves,
+                clock: parent_clock,
+            } => {
+                if shelves.len() < SHELF_SIZE_LIMIT {
+                    // add a value
+                    let clock = SecureClock::new(&value, parent_clock.0);
+                    let shelf = Shelf::Value { value, clock };
+                    shelves.insert(key, shelf);
+                } else {
+                    // remove some values
+                    let keys = shelves
+                        .keys()
+                        .into_iter()
+                        .cloned()
+                        .choose_multiple(&mut rand::thread_rng(), SHELF_SIZE_LIMIT / 2);
+                    for key in keys {
+                        shelves.remove(&key);
+                    }
+                    shelves.values_mut().for_each(|shelf| match shelf {
+                        Shelf::Value { value, clock } => {
+                            *clock = SecureClock::new(value, clock.get_logical_clock() + 1)
+                        }
+                        Shelf::Map { .. } => {
+                            unreachable!("Data structure should be flat.")
+                        }
+                    });
+                    parent_clock.0 += 1;
+                }
+            }
+            Shelf::Value { .. } => unreachable!("Top level shelves should be dicts"),
+        }
+    }
+    fn send_update(&self, context: &mut ActionContext) {
+        // Create state vector
+        let sv = context.shelf.get_state_vector();
+        // Multicast to all peers
+        context
+            .peers
+            .iter()
+            .filter(|(peer_id, _)| peer_id.as_str() != context.uid)
+            .for_each(|(_, outbox)| {
+                let payload = Payload::StateVector(sv.clone());
+
+                let send_res = outbox.send(Message::new(context.uid.to_owned(), payload));
+            })
+    }
+
+    fn corrupt_clock(&self, context: &mut ActionContext) {
+        match context.shelf {
+            Shelf::Value { .. } => unreachable!("Top level is a map"),
+            Shelf::Map { shelves, .. } => {
+                if shelves.is_empty() {
+                    return;
+                }
+
+                if let Some((key, Shelf::Value { clock, .. })) =
+                    shelves.iter_mut().choose(&mut rand::thread_rng())
+                {
+                    clock.clock = rand::random();
+                } else {
+                    unreachable!("Shelf should be flat")
+                }
+            }
+        }
+    }
+
+    fn corrupt_value(&self, context: &mut ActionContext) {
+        match context.shelf {
+            Shelf::Value { .. } => unreachable!("Top level is a map"),
+            Shelf::Map { shelves, .. } => {
+                if shelves.is_empty() {
+                    return;
+                }
+
+                if let Some((key, Shelf::Value { value, .. })) =
+                    shelves.iter_mut().choose(&mut rand::thread_rng())
+                {
+                    *value = rand::random();
+                } else {
+                    unreachable!("Shelf should be flat")
+                }
+            }
+        }
+    }
+
+    fn check_corruption(&self, context: &mut ActionContext) {
+        if let Shelf::Map { shelves, .. } = context.shelf {
+            for (key, sub_shelf) in shelves.iter() {
+                if let Shelf::Value { clock, value } = sub_shelf {
+                    assert!(
+                        clock.verify(&value),
+                        "Found corrupt pair in shelf: {key}: [{value}, {clock}]"
+                    );
+                } else {
+                    unreachable!("Should be flat structure")
+                }
+            }
+        } else {
+            unreachable!("Top level should be map")
         }
     }
 }
 
 struct ActionContext<'a> {
-    peers: &'a mut HashMap<String, Sender<Message>>,
+    uid: &'a str,
+    peers: &'a HashMap<String, Sender<Message>>,
     inbox: &'a mut Receiver<Message>,
-    client_config: &'a mut ClientConfig,
+    shelf: &'a mut SecureShelf,
 }
 
-impl<'a> AsMut<ActionContext<'a>> for Client {
-    fn as_mut(&mut self) -> &mut ActionContext<'a> {
-        &mut ActionContext {
-            peers: &mut self.peers,
-            inbox: &mut &mut self.inbox,
-            client_config: &mut self.client_config,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn simulate_byzantine_network() {
+        let config = SimulationConfig {
+            n_nodes: 10,
+            p_byzantine: 0.4,
+            duration: Duration::from_secs(10),
+        };
+        let network = Client::new_network(&config);
+        let mailboxes = network[0].peers.clone();
+        let handles: Vec<_> = network
+            .into_iter()
+            .map(|mut client| {
+                thread::spawn(move || loop {
+                    if let Some(shelf) = client.step() {
+                        return (shelf, client.is_byzantine());
+                    }
+                })
+            })
+            .collect();
+        thread::sleep(config.duration);
+        mailboxes.values().for_each(|mailbox| {
+            mailbox
+                .send(Message::new("".to_owned(), Payload::Terminate))
+                .unwrap()
+        });
+        let shelf_results = handles.into_iter().map(|h| h.join().unwrap());
+        let valid_shelves = shelf_results
+            .filter(|(_, is_byzantine)| !is_byzantine)
+            .map(|(shelf, _)| shelf);
+        for shelf in valid_shelves {
+            if let Shelf::Map { shelves, .. } = shelf {
+                for sub_shelf in shelves.into_values() {
+                    if let Shelf::Value { clock, value } = sub_shelf {
+                        assert!(clock.verify(&value))
+                    } else {
+                        unreachable!("Should be flat structure")
+                    }
+                }
+            } else {
+                unreachable!("Top level should be map")
+            }
         }
     }
-}
 
-mod ClientActions {
-    use std::time::{Duration, SystemTime};
-
-    use super::ActionContext;
-
-    pub struct CheckInbox {
-        interval: Duration,
-        last_performed: SystemTime,
-    }
-
-    impl CheckInbox {
-        fn should_run(&self) -> bool {
-            SystemTime::now()
-                .duration_since(self.last_performed)
-                .map(|dur| dur > self.interval)
-                .unwrap_or(false)
+    #[test]
+    fn simulate_network_sequential() {
+        const STEPS: usize = 10;
+        let config = SimulationConfig {
+            n_nodes: 4,
+            p_byzantine: 0.5,
+            duration: Duration::from_secs(5),
+        };
+        let mut network = Client::new_network(&config);
+        for i in 0..STEPS {
+            network.iter_mut().for_each(|client| {
+                client.step();
+            })
         }
 
-        pub fn act(&mut self, client: &mut ActionContext) {}
+        let valid_clients = network.into_iter().filter(|client| !client.is_byzantine());
+        for client in valid_clients {
+            let shelf = client.shelf;
+            if let Shelf::Map { shelves, .. } = shelf {
+                for sub_shelf in shelves.into_values() {
+                    if let Shelf::Value { clock, value } = sub_shelf {
+                        assert!(clock.verify(&value))
+                    } else {
+                        unreachable!("Should be flat structure")
+                    }
+                }
+            } else {
+                unreachable!("Top level should be map")
+            }
+        }
     }
 }

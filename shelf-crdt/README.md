@@ -1,3 +1,7 @@
+<img src="./assets//ShelfAware.png"
+     alt="ShelfAware Logo"
+     width="200" />
+
 # CRDT Experiments
 
 Implementations of the Shelf CRDT
